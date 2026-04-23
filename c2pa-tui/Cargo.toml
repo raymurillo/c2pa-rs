@@ -1,0 +1,43 @@
+[package]
+name = "c2pa-tui"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88.0"
+description = "Terminal UI for browsing and comparing C2PA manifests"
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "c2pa-tui"
+path = "src/main.rs"
+
+[lib]
+name = "c2pa_tui"
+path = "src/lib.rs"
+
+[dependencies]
+c2pa          = { path = "../sdk", default-features = false, features = ["file_io", "rust_native_crypto"] }
+ratatui       = "0.29"
+crossterm     = { version = "0.28", features = ["event-stream"] }
+tokio         = { version = "1", features = ["full"] }
+reqwest       = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+clap          = { version = "4", features = ["derive"] }
+thiserror     = "2"
+serde_json    = "1"
+nucleo        = "0.5"
+tui-tree-widget = "0.22"
+async-trait   = "0.1"
+walkdir       = "2"
+url           = "2"
+glob          = "0.3"
+tracing       = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+indexmap      = "2"
+futures       = "0.3"
+tempfile      = "3"
+
+[dev-dependencies]
+insta    = { version = "1", features = ["filters"] }
+wiremock = "0.6"
+mockall  = "0.13"
+proptest = "1"
+tokio    = { version = "1", features = ["full"] }

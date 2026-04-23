@@ -123,6 +123,24 @@ impl RemoteClient {
     /// Returns `AppError::Auth` on 401/403, `AppError::NoManifest` on 404.
     #[tracing::instrument(skip(self, auth), fields(url = %url))]
     pub async fn fetch(&self, url: &url::Url, auth: &Auth) -> Result<bytes::Bytes> {
+        // Validate the parsed scheme — reject anything that isn't http or https,
+        // regardless of how the URL was constructed.
+        let scheme = url.scheme();
+        if scheme != "http" && scheme != "https" {
+            return Err(AppError::UnsupportedFormat(format!(
+                "unsupported URL scheme {scheme:?}; only http and https are allowed"
+            )));
+        }
+
+        // Sending Basic or Digest credentials over plain HTTP exposes them in
+        // cleartext.  Refuse rather than silently leak credentials.
+        if scheme == "http" && matches!(auth, Auth::Basic { .. } | Auth::Digest { .. }) {
+            return Err(AppError::Auth(
+                "Basic and Digest authentication require HTTPS; refusing to send \
+                 credentials over an unencrypted connection".into(),
+            ));
+        }
+
         let mut attempts = 0u8;
         loop {
             let builder = self.inner.get(url.as_str());
@@ -175,11 +193,20 @@ async fn load(&self, client: &RemoteClient) -> Result<Vec<DisplayNode>> {
     let bytes = client.fetch(&self.url, &self.auth).await?;
 
     // Write to a named temp file so c2pa can detect format by extension.
-    // Derive extension from URL path, fall back to ".bin".
-    let ext = self.url.path_segments()
+    // Derive extension from URL path and allowlist it; fall back to ".bin".
+    // The allowlist prevents unexpected characters (path separators, null bytes,
+    // overly long strings) from reaching the filesystem via the suffix.
+    let raw_ext = self.url.path_segments()
         .and_then(|segs| segs.last())
         .and_then(|seg| seg.rsplit('.').next())
         .unwrap_or("bin");
+    let ext = if raw_ext.len() <= 10
+        && raw_ext.chars().all(|c| c.is_ascii_alphanumeric())
+    {
+        raw_ext
+    } else {
+        "bin"
+    };
     let mut tmp = tempfile::Builder::new()
         .suffix(&format!(".{ext}"))
         .tempfile()?;
@@ -338,6 +365,41 @@ async fn bearer_auth_header_is_sent() {
     // fetch directly to verify header is set (don't call RemoteSource::load as
     // the empty body would fail c2pa parsing)
     client.fetch(&url, &auth).await.unwrap();
+}
+```
+
+---
+
+## Additional unit tests — `remote/client.rs`
+
+Add these tests alongside the integration tests:
+
+```rust
+#[tokio::test]
+async fn fetch_rejects_non_http_scheme() {
+    let client = RemoteClient::new().unwrap();
+    // url::Url::parse succeeds for ftp:// but fetch must reject it
+    let url = url::Url::parse("ftp://example.com/asset.jpg").unwrap();
+    let err = client.fetch(&url, &Auth::None).await.unwrap_err();
+    assert!(matches!(err, AppError::UnsupportedFormat(_)));
+}
+
+#[tokio::test]
+async fn fetch_rejects_basic_auth_over_http() {
+    let client = RemoteClient::new().unwrap();
+    let url = url::Url::parse("http://example.com/asset.jpg").unwrap();
+    let auth = Auth::from_spec("basic:user:pass").unwrap();
+    let err = client.fetch(&url, &auth).await.unwrap_err();
+    assert!(matches!(err, AppError::Auth(_)));
+}
+
+#[tokio::test]
+async fn fetch_rejects_digest_auth_over_http() {
+    let client = RemoteClient::new().unwrap();
+    let url = url::Url::parse("http://example.com/asset.jpg").unwrap();
+    let auth = Auth::from_spec("digest:user:pass").unwrap();
+    let err = client.fetch(&url, &auth).await.unwrap_err();
+    assert!(matches!(err, AppError::Auth(_)));
 }
 ```
 

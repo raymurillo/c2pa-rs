@@ -204,6 +204,15 @@ Rules:
 - If no include patterns are specified, default include is `**` (everything)
 - Patterns use `glob::Pattern` syntax
 
+**Input limits (enforce before calling `glob::Pattern::new`):**
+- Reject the entire query if it exceeds **256 characters** → `AppError::Glob`
+- Reject any single token that exceeds **128 characters** → `AppError::Glob`
+- Reject any token containing more than **4 `{` characters** (limits alternation
+  depth) → `AppError::Glob`
+
+These caps prevent a user from crafting a pathologically complex pattern that causes
+the glob crate to spend unbounded time during matching.
+
 ### `FieldFilter::apply`
 
 Walk the `DisplayNode` tree recursively, pruning nodes whose dot-joined paths do not
@@ -285,6 +294,24 @@ fn flatten_produces_dot_joined_paths() {
 ### `filter.rs` tests
 
 ```rust
+#[test]
+fn query_exceeding_max_length_returns_error() {
+    let long = "a".repeat(257);
+    assert!(FieldFilter::from_query(&long).is_err());
+}
+
+#[test]
+fn token_exceeding_max_length_returns_error() {
+    let long_token = "a".repeat(129);
+    assert!(FieldFilter::from_query(&long_token).is_err());
+}
+
+#[test]
+fn token_with_excess_alternation_depth_returns_error() {
+    // 5 opening braces — should be rejected
+    assert!(FieldFilter::from_query("a.{b.{c.{d.{e.{f}}}}}").is_err());
+}
+
 #[test]
 fn include_only_assertions() {
     let f = FieldFilter::from_query("assertions.*").unwrap();
