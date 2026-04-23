@@ -102,11 +102,13 @@ fn main() {
         }
     }
 
-    // Populate sources from CLI inputs
+    // Populate sources from CLI inputs.
+    // Directories are expanded into individual FileSource entries so each file
+    // gets its own row in the file list (expansion model — see spec-01).
     for input in &cli.inputs {
         if input.starts_with("http://") || input.starts_with("https://") {
             match url::Url::parse(input) {
-                Ok(url) => app.add_source(Box::new(RemoteSource::new(url, auth.clone()))),
+                Ok(url) => app.add_source(std::sync::Arc::new(RemoteSource::new(url, auth.clone()))),
                 Err(e) => {
                     eprintln!("warning: invalid URL {input:?}: {e}");
                 }
@@ -114,9 +116,19 @@ fn main() {
         } else {
             let path = std::path::PathBuf::from(input);
             if path.is_dir() {
-                app.add_source(Box::new(DirSource::new(path)));
+                // Expand the directory and add each supported file individually.
+                match DirSource::new(path.clone()).entries() {
+                    Ok(entries) => {
+                        for file_src in entries {
+                            app.add_source(std::sync::Arc::new(file_src));
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("warning: could not read directory {path:?}: {e}");
+                    }
+                }
             } else {
-                app.add_source(Box::new(FileSource::new(path)));
+                app.add_source(std::sync::Arc::new(FileSource::new(path)));
             }
         }
     }

@@ -93,6 +93,7 @@ pub fn new(config: Config) -> Result<Self> {
     Ok(Self {
         sources: Vec::new(),
         loaded: HashMap::new(),
+        loading_indices: HashSet::new(),
         selected_left: 0,
         compare_selection: None,
         filter: FieldFilter::default(),
@@ -109,11 +110,12 @@ pub fn new(config: Config) -> Result<Self> {
 ```rust
 pub async fn run(mut self) -> Result<()> {
     // Initialize tracing to stderr before we take over stdout with the TUI.
-    // Users can set RUST_LOG=debug to see structured logs alongside the UI.
-    tracing_subscriber::fmt()
+    // Use try_init() so tests that call run() multiple times don't panic on
+    // the second initialization attempt.
+    let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
-        .init();
+        .try_init();
 
     // Setup terminal
     crossterm::terminal::enable_raw_mode()
@@ -174,7 +176,7 @@ async fn event_loop(
     let mut event_stream = EventStream::new();
 
     loop {
-        terminal.draw(|f| crate::ui::draw(f, self))
+        terminal.draw(|f| crate::ui::draw(f, self))  // self is &mut App here
             .map_err(|e| AppError::Terminal(e.to_string()))?;
 
         tokio::select! {
@@ -224,9 +226,6 @@ async fn handle_event(
                 AppState::Error { .. } => {
                     // Any key dismisses error overlay
                     self.state = AppState::Browse;
-                }
-                AppState::Loading { .. } => {
-                    // Only Ctrl+C / q handled above; ignore other keys while loading
                 }
                 AppState::Comparing => self.handle_compare_key(key),
             }
@@ -278,10 +277,13 @@ Key actions in Browse mode:
 
 When the user presses Enter on a source:
 
-1. If already in `loaded`, do nothing (it's cached).
-2. Set `state = AppState::Loading { source_index: idx }`.
-3. Spawn a tokio task that calls `source.load(&client).await` and sends the result
-   on `load_tx`.
+1. If already in `loaded` (and not force-reload), do nothing (it's cached).
+2. If already in `loading_indices`, do nothing (already in flight).
+3. Add `idx` to `loading_indices`. Spawn a tokio task that calls
+   `source.load(&client).await` and sends the result on `load_tx`.
+
+The file-list widget uses `app.loading_indices.contains(&i)` to show `[~]` icons,
+so multiple concurrent loads are all visible simultaneously.
 
 ```rust
 fn trigger_load(
@@ -293,37 +295,35 @@ fn trigger_load(
     if !force && self.loaded.contains_key(&idx) {
         return;
     }
+    if self.loading_indices.contains(&idx) {
+        return; // already in flight
+    }
     self.loaded.remove(&idx);
-    self.state = AppState::Loading { source_index: idx };
+    self.loading_indices.insert(idx);
 
-    // Clone what the task needs (sources aren't Clone — use Arc or index into a shared vec)
-    // Simplest approach: store sources as Arc<Vec<Box<dyn ManifestSource>>>
-    // OR: spawn the load inline using a channel and a handle to the client.
-    // Implementation detail: the foundation stub uses Vec directly.
-    // You will need to change sources to Arc<[Box<dyn ManifestSource>]> or similar
-    // to share ownership with the spawned task.
-    // Alternatively, expose a load method via an index + shared Arc<Mutex<...>>.
-    // Choose whichever is cleanest.
+    // Sources are stored as Arc<dyn ManifestSource>, so we can clone the Arc
+    // cheaply and move it into the spawned task without requiring ManifestSource: Clone.
+    let Some(src) = self.sources.get(idx).cloned() else { return };
+    let client = self.client.clone(); // reqwest::Client is Arc-backed, Clone is cheap
     let tx = load_tx.clone();
-    // ... spawn task
-    todo!("implement trigger_load task spawn")
+    tokio::spawn(async move {
+        let result = src.load(&client).await;
+        let _ = tx.send((idx, result));
+    });
 }
 ```
-
-> **Design decision:** Pick an ownership strategy for sharing sources with spawned
-> tasks. Options: `Arc<Vec<Box<dyn ManifestSource>>>`, message passing, or using
-> `tokio::task::spawn_blocking`. Document your choice in a comment.
 
 ### `handle_load_result`
 
 ```rust
 fn handle_load_result(&mut self, idx: usize, result: Result<Vec<DisplayNode>>) {
+    self.loading_indices.remove(&idx);
     match result {
         Ok(nodes) => {
             self.loaded.insert(idx, nodes);
-            // If this was the loading source, return to Browse
-            if self.state == (AppState::Loading { source_index: idx }) {
-                self.state = AppState::Browse;
+            // Return to Browse only if we're not in a modal state
+            if self.state == AppState::Browse {
+                // already fine — no state change needed
             }
         }
         Err(e) => {
@@ -433,7 +433,7 @@ use ratatui::Frame;
 use crate::app::App;
 use crate::ui::layout::{split_horizontal, split_status};
 
-pub fn draw(frame: &mut Frame, app: &App) {
+pub fn draw(frame: &mut Frame, app: &mut App) {
     let (main_area, status_area) = split_status(frame.area());
     let (list_area, detail_area) = split_horizontal(main_area, app.config.left_pane_pct);
 
@@ -442,11 +442,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
     status_bar::draw(frame, status_area, app);
 
     // Overlays drawn last (on top)
-    match &app.state {
+    match app.state.clone() {
         crate::app::AppState::Searching { .. } => search_bar::draw(frame, frame.area(), app),
         crate::app::AppState::Filtering { .. } => filter_bar::draw(frame, frame.area(), app),
         crate::app::AppState::Comparing => compare::draw(frame, detail_area, app),
-        crate::app::AppState::Error { message } => draw_error_overlay(frame, frame.area(), message),
+        crate::app::AppState::Error { message } => draw_error_overlay(frame, frame.area(), &message),
         _ => {}
     }
 }

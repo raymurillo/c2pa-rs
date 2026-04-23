@@ -152,20 +152,28 @@ impl Matcher {
 }
 
 /// Convert nucleo match indices into byte ranges for the display string.
-fn extract_highlights(display: &str, column: &nucleo::Item<'_>) -> Vec<Range<usize>> {
-    // nucleo provides char-level match indices via `get_indices`.
-    // Convert char indices to byte ranges.
-    let mut indices = Vec::new();
-    // TODO: use the correct nucleo API to get match indices from `column`.
-    // This depends on the exact nucleo version API. Check the nucleo snapshot/item API.
-    // Expected output: a Vec<u32> of matched char positions.
-    // Convert to byte ranges by walking the char indices of `display`.
-    let chars: Vec<(usize, char)> = display.char_indices().collect();
-    // (stub: return full range until nucleo API is confirmed)
-    if display.is_empty() {
-        return vec![];
-    }
-    vec![0..display.len()]
+///
+/// # Implementation requirement
+///
+/// This function MUST return tight per-character byte ranges, not a single
+/// range covering the whole string. The `highlight_ranges_are_tight` test in the
+/// done criteria enforces this.
+///
+/// To implement: call `nucleo::Snapshot::get_indices` (or the equivalent method
+/// on the snapshot item for your nucleo version) to retrieve a `Vec<u32>` of
+/// matched char positions. Then convert char positions to byte offsets by walking
+/// `display.char_indices()`.
+///
+/// Look at how Helix's `helix-tui` or `telescope-nucleo` integrations call
+/// `get_indices` for a reference implementation.
+fn extract_highlights(display: &str, snapshot: &nucleo::Snapshot<usize>, item_index: u32) -> Vec<Range<usize>> {
+    // Use nucleo's index extraction API to get matched char positions.
+    // The exact call depends on the nucleo version — check the crate docs.
+    // Pseudocode:
+    //   let mut indices = Vec::new();
+    //   snapshot.pattern().column_pattern(0).indices(item.matcher_columns[0].slice(..), &mut nucleo::Matcher::new(nucleo::Config::DEFAULT), &mut indices);
+    //   convert indices (Vec<u32>) to byte ranges via display.char_indices()
+    todo!("implement extract_highlights using nucleo index API — see doc comment above")
 }
 
 impl Default for Matcher {
@@ -173,11 +181,11 @@ impl Default for Matcher {
 }
 ```
 
-> **Implementation note:** The `extract_highlights` stub above is intentionally
-> incomplete. You must find the correct nucleo API for extracting per-character
-> match positions from the snapshot item. Look at how Helix or other nucleo users
-> call `get_indices` or equivalent. The final impl should return tight byte ranges,
-> not the full string range.
+> **Implementation requirement:** `extract_highlights` is **not optional** —
+> the done criteria include a test that asserts highlight ranges are tight (i.e.,
+> shorter than the full display string for a non-empty query on a matching item).
+> Do not mark this spec done while `extract_highlights` contains a `todo!()` or
+> returns a full-length range.
 
 ---
 
@@ -309,4 +317,31 @@ cargo test --lib search
 cargo build
 cargo fmt -- --check
 cargo clippy -- -D warnings
+```
+
+Additionally, the following test must pass — add it to the unit test block:
+
+```rust
+#[test]
+fn highlight_ranges_are_tight_not_full_string() {
+    // For an exact substring match, the highlight range must not span the
+    // entire display string. This confirms extract_highlights is real, not stubbed.
+    let mut m = Matcher::new();
+    m.index(&[FlatNode {
+        path: "Claim.format".into(),
+        display: "format: image/jpeg".into(),
+        node_index: 0,
+    }]);
+    let results = m.query("jpeg");
+    assert!(!results.is_empty(), "should match");
+    let ranges = &results[0].highlight_ranges;
+    assert!(!ranges.is_empty(), "highlight_ranges must not be empty");
+    // The matched range must be shorter than the full display string
+    let total_highlighted: usize = ranges.iter().map(|r| r.end - r.start).sum();
+    assert!(
+        total_highlighted < "format: image/jpeg".len(),
+        "highlight ranges must be tight, not the full string (got {} bytes highlighted)",
+        total_highlighted
+    );
+}
 ```
