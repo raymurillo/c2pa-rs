@@ -27,9 +27,10 @@ COMMIT_MESSAGE: $ARGUMENTS (optional, will auto-generate if not provided)
      - Execute `just test` to run unit tests
      - Execute `just test-race` to run race detection tests
    - If justfile doesn't exist, fall back to individual commands:
-     - Execute `go mod tidy` to ensure dependencies are clean
-     - Execute `go build ./...` to ensure code compiles
-     - Execute `go test ./...` to ensure tests pass
+     - Execute `cargo fmt --check` to check formatting
+     - Execute `cargo clippy -- -D warnings` to run linter
+     - Execute `cargo check` to ensure code compiles
+     - Execute `cargo test` to ensure tests pass
    - If any validation fails, exit with error and details
 
 4. Optional CI skip flag:
@@ -42,8 +43,10 @@ COMMIT_MESSAGE: $ARGUMENTS (optional, will auto-generate if not provided)
    - Format: `feat: implement {SPEC_NAME} specification`
    - For example: `feat: implement 010-project-foundation specification`
 
-2. Stage all changes:
-   - Execute `git add .` to stage all modified files
+2. Stage changes explicitly:
+   - Execute `git diff --name-only` and `git ls-files --others --exclude-standard` to list modified and untracked files
+   - Stage each relevant file by path: `git add <file1> <file2> ...`
+   - Do NOT use `git add .` — parallel sessions share the repo root and `git add .` can capture another session's changes
 
 3. Create the commit:
    - Execute `git commit -m "{COMMIT_MESSAGE}"`
@@ -84,7 +87,7 @@ COMMIT_MESSAGE: $ARGUMENTS (optional, will auto-generate if not provided)
   - `just lint` failure: "💡 Linting failed. Try: just lint to see specific issues"
   - `just test` failure: "💡 Unit tests failed. Try: just test to see which tests failed"
   - `just test-race` failure: "💡 Race condition detected. Try: just test-race to see race conditions"
-- If justfile not found: "⚠️ Justfile not found, using fallback Go commands"
+- If justfile not found: "⚠️ Justfile not found, using fallback Cargo commands"
 - If build fails: "Build failed: {error details}"
 - If tests fail: "Tests failed: {error details}"
 - If git commit fails: "Commit failed: {error details}"

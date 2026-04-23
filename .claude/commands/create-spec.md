@@ -97,7 +97,7 @@ Create a comprehensive specification file at `/specs/{number}-{feature-name}.md`
 ### Phase 3: Validation and Finalization
 
 1. Ensure the spec follows project conventions:
-   - Uses Go idioms and patterns
+   - Uses Rust idioms and patterns
    - Follows naming conventions from CLAUDE.md
    - Integrates with existing architecture
    - Includes proper error handling
@@ -177,7 +177,7 @@ The command will create:
 
 The generated spec must be:
 - Detailed enough for Claude Code to implement without ambiguity
-- Following Go idioms and project conventions
+- Following Rust idioms and project conventions
 - Compatible with existing codebase architecture
 - Testable and maintainable
 - Complete with all necessary sections filled out

@@ -59,8 +59,10 @@ COMMIT_TYPE: auto-detected from message or can be specified (feat/fix/docs/style
    - Format: `{type}: {COMMIT_MESSAGE}`
    - Ensure message is descriptive and follows conventional commits
 
-3. Stage all changes:
-   - Execute `git add .` to stage all modified files
+3. Stage changes explicitly:
+   - Execute `git diff --name-only` and `git ls-files --others --exclude-standard` to list modified and untracked files
+   - Stage each relevant file by path: `git add <file1> <file2> ...`
+   - Do NOT use `git add .` — parallel sessions share the repo root and `git add .` can capture another session's changes
 
 4. Create the commit:
    - Execute `git commit -m "{formatted_commit_message}"`

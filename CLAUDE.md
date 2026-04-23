@@ -224,6 +224,21 @@ fn platform_specific_function() {
 - [ ] Performance considerations addressed
 - [ ] Security best practices followed
 
+### Parallel Claude Sessions (Worktrees)
+
+Multiple Claude sessions run in isolated git worktrees under `.claude/worktrees/<session-id>/`. Each session works on its own branch and never touches another session's files.
+
+**Rules for every session:**
+- **Never `git add .`** — always stage files explicitly by path to avoid accidentally including another session's changes
+- **Set `CARGO_TARGET_DIR`** to a session-unique path to prevent `target/` lock contention between parallel Cargo builds:
+  ```bash
+  export CARGO_TARGET_DIR="/tmp/cargo-target-$(git rev-parse --abbrev-ref HEAD)"
+  ```
+- **Branch per session** — each worktree is already on its own branch; never switch branches inside a worktree
+- **Specs are the coordination layer** — parallel sessions implementing different specs must not touch the same source files; check `specs/000-specs-status.md` for in-progress work before starting
+- **Push before PR** — after committing, push the branch and open a PR; do not merge locally into `main`
+- **`git status` scope** — `git status` in a worktree only shows that worktree's changes, which is correct; do not run git commands from the repo root while sessions are active
+
 ## Performance Considerations
 
 ### Memory Management

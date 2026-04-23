@@ -23,9 +23,9 @@ SCOPE: $ARGUMENTS (optional - specify scope like "internal/camera", "ui", "tests
    - Check for commented-out code blocks
 
 3. **Dependency Audit**
-   - Review go.mod for unused dependencies
-   - Check for duplicate functionality across packages
-   - Identify outdated or vulnerable dependencies
+   - Review `Cargo.toml` for unused dependencies
+   - Check for duplicate functionality across crates
+   - Identify outdated or vulnerable dependencies (`cargo audit`)
    - Find missing dependencies that should be explicit
 
 4. **Code Quality Issues**
@@ -62,9 +62,9 @@ SCOPE: $ARGUMENTS (optional - specify scope like "internal/camera", "ui", "tests
 ### Phase 3: Automated Cleanup
 
 1. **Safe Automated Fixes**
-   - Run `go mod tidy` to clean up dependencies
-   - Execute `gofmt` and `goimports` for formatting
-   - Remove unused imports and variables
+   - Run `cargo fmt` to fix formatting
+   - Execute `cargo clippy --fix --allow-dirty` for auto-fixable lints
+   - Run `cargo check` to surface compilation issues
    - Fix simple linting issues
 
 2. **Code Organization**
@@ -114,16 +114,16 @@ SCOPE: $ARGUMENTS (optional - specify scope like "internal/camera", "ui", "tests
 ### Phase 5: Testing and Validation
 
 1. **Pre-cleanup Testing**
-   - Run full test suite to establish baseline
-   - Execute `go test -race ./...` for race condition detection
-   - Run benchmarks if available
+   - Run full test suite to establish baseline: `cargo test`
+   - Execute `cargo test -- --test-threads=1` if race conditions are suspected
+   - Run benchmarks if available: `cargo bench`
    - Perform integration testing
 
 2. **Post-cleanup Validation**
-   - Run full test suite after each major change
-   - Verify no new race conditions introduced
+   - Run full test suite after each major change: `cargo test`
+   - Verify no regressions: `cargo clippy -- -D warnings`
    - Check that benchmarks haven't regressed
-   - Validate that all packages still build
+   - Validate that all crates still build: `cargo build --all`
 
 3. **Manual Testing**
    - Test critical user flows
@@ -190,8 +190,8 @@ SCOPE: $ARGUMENTS (optional - specify scope like "internal/camera", "ui", "tests
 
 ### Performance Optimizations
 - Remove inefficient algorithms
-- Optimize memory usage
-- Improve goroutine management
+- Optimize memory usage and unnecessary allocations
+- Improve async task and thread management
 - Fix resource leaks
 
 ## Safety Measures

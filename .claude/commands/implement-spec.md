@@ -24,7 +24,7 @@ Implement a specification document from the `specs/` directory into working code
 ## Guidelines
 
 - **Follow the spec exactly** - implement all requirements as specified
-- **Maintain code quality** - use proper Go conventions, error handling, and documentation
+- **Maintain code quality** - use proper Rust conventions, error handling, and documentation
 - **Integrate seamlessly** - work with existing architecture and patterns
 - **Test thoroughly** - ensure the implementation works end-to-end
 - **Handle errors gracefully** - implement proper error handling as specified
