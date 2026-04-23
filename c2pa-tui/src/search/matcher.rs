@@ -241,7 +241,14 @@ mod tests {
         m.index(&make_nodes());
         let results_lower = m.query("photo");
         let results_upper = m.query("PHOTO");
-        assert_eq!(results_lower.len(), results_upper.len());
+        let indices_lower: std::collections::BTreeSet<_> =
+            results_lower.iter().map(|r| r.node_index).collect();
+        let indices_upper: std::collections::BTreeSet<_> =
+            results_upper.iter().map(|r| r.node_index).collect();
+        assert_eq!(
+            indices_lower, indices_upper,
+            "case-insensitive match must return identical node indices"
+        );
     }
 
     #[test]

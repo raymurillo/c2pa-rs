@@ -284,7 +284,11 @@ mod tests {
 
     #[tokio::test]
     async fn unsupported_ext_returns_error() {
-        let src = FileSource::new(PathBuf::from("/tmp/test.txt"));
+        use tempfile::Builder;
+        // Use a real file with a .txt extension to exercise the full load path,
+        // not just the extension check on a non-existent path.
+        let tmp = Builder::new().suffix(".txt").tempfile().unwrap();
+        let src = FileSource::new(tmp.path().to_path_buf());
         let client = RemoteClient::default();
         let result = src.load(&client).await;
         assert!(matches!(result, Err(AppError::UnsupportedFormat(_))));

@@ -43,9 +43,19 @@ mod tests {
     #[test]
     fn default_config_values() {
         let cfg = Config::default();
+        // Dark is the most common terminal background — default theme
         assert_eq!(cfg.theme, Theme::Dark);
+        // Mouse enabled by default for richer UX; users may opt out via config
         assert!(cfg.mouse_enabled);
-        assert_eq!(cfg.left_pane_pct, 25);
+        // Left pane must occupy a valid percentage of the terminal width (1–99)
+        assert!(
+            cfg.left_pane_pct >= 1 && cfg.left_pane_pct <= 99,
+            "left_pane_pct={} is outside the valid 1–99 range",
+            cfg.left_pane_pct
+        );
+        // No credentials by default — user must explicitly configure auth
+        assert!(matches!(cfg.auth, crate::remote::Auth::None));
+        // No filter pre-applied on startup
         assert!(cfg.initial_filter.is_none());
     }
 

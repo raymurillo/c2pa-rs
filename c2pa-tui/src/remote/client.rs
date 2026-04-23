@@ -100,14 +100,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_constructs_without_panic() {
-        let client = RemoteClient::default();
+    fn new_builds_configured_client() {
+        // new() is the primary constructor — it sets timeout, connect_timeout, and
+        // user_agent, any of which could fail via reqwest::ClientBuilder::build().
+        let client = RemoteClient::new().expect("RemoteClient::new should succeed");
         let _ = client.client();
     }
 
     #[test]
     fn clone_preserves_client() {
-        let c1 = RemoteClient::default();
+        let c1 = RemoteClient::new().unwrap();
         let c2 = c1.clone();
         let _ = c1.client();
         let _ = c2.client();

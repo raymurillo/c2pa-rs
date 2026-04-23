@@ -4,8 +4,6 @@ use c2pa_tui::remote::{Auth, RemoteClient};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-/// Requires spec-01 FileSource::load (store_to_nodes) to be implemented.
-#[ignore = "requires spec-01: FileSource::load not yet implemented"]
 #[tokio::test]
 async fn remote_source_loads_signed_asset() {
     let server = MockServer::start().await;

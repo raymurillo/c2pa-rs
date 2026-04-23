@@ -54,36 +54,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn app_state_equality() {
-        assert_eq!(AppState::Browse, AppState::Browse);
-        assert_eq!(AppState::Comparing, AppState::Comparing);
-        assert_ne!(AppState::Browse, AppState::Comparing);
+    fn app_state_variants_are_mutually_distinct() {
+        let states = vec![
+            AppState::Browse,
+            AppState::Searching { query: "q".into() },
+            AppState::Filtering { query: "q".into() },
+            AppState::Comparing,
+            AppState::Error { message: "e".into() },
+        ];
+        for (i, a) in states.iter().enumerate() {
+            for (j, b) in states.iter().enumerate() {
+                if i == j {
+                    assert_eq!(a, b, "state[{i}] should equal itself");
+                } else {
+                    assert_ne!(a, b, "state[{i}] should differ from state[{j}]");
+                }
+            }
+        }
     }
 
     #[test]
-    fn app_state_searching_equality() {
-        let a = AppState::Searching {
-            query: "foo".into(),
-        };
-        let b = AppState::Searching {
-            query: "foo".into(),
-        };
-        let c = AppState::Searching {
-            query: "bar".into(),
-        };
-        assert_eq!(a, b);
-        assert_ne!(a, c);
-    }
-
-    #[test]
-    fn app_state_error_equality() {
-        let a = AppState::Error {
-            message: "oops".into(),
-        };
-        let b = AppState::Error {
-            message: "oops".into(),
-        };
-        assert_eq!(a, b);
+    fn data_variant_equality_is_field_sensitive() {
+        assert_ne!(
+            AppState::Searching { query: "foo".into() },
+            AppState::Searching { query: "bar".into() },
+        );
+        assert_ne!(
+            AppState::Filtering { query: "foo".into() },
+            AppState::Filtering { query: "bar".into() },
+        );
+        assert_ne!(
+            AppState::Error { message: "network timeout".into() },
+            AppState::Error { message: "permission denied".into() },
+        );
     }
 }
 
