@@ -616,12 +616,13 @@ dependencies = [
 name = "c2pa-tui"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "c2pa",
  "clap",
  "crossterm",
+ "futures",
  "glob",
+ "indexmap 2.14.0",
  "insta",
  "mockall 0.13.1",
  "nucleo",

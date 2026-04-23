@@ -1,10 +1,31 @@
 use async_trait::async_trait;
 use std::path::PathBuf;
 use url::Url;
+use walkdir::WalkDir;
 
-use crate::error::Result;
-use crate::manifest::tree::DisplayNode;
+use crate::error::{AppError, Result};
+use crate::manifest::tree::{store_to_nodes, DisplayNode, NodeValue};
 use crate::remote::{Auth, RemoteClient};
+
+/// Map a lowercase file extension to its MIME type.
+/// Returns `None` for unsupported extensions.
+fn ext_to_mime(ext: &str) -> Option<&'static str> {
+    match ext {
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "png" => Some("image/png"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "tiff" | "tif" => Some("image/tiff"),
+        "avif" => Some("image/avif"),
+        "heic" | "heif" => Some("image/heic"),
+        "mp4" | "m4v" => Some("video/mp4"),
+        "mov" => Some("video/quicktime"),
+        "avi" => Some("video/x-msvideo"),
+        "pdf" => Some("application/pdf"),
+        "c2pa" => Some("application/x-c2pa-manifest-store"),
+        _ => None,
+    }
+}
 
 /// Abstraction over all manifest origins: local files, directories, and remote URLs.
 ///
@@ -44,8 +65,33 @@ impl ManifestSource for FileSource {
         &self.label
     }
 
+    #[tracing::instrument(skip(self, _client), fields(path = %self.path.display()))]
     async fn load(&self, _client: &RemoteClient) -> Result<Vec<DisplayNode>> {
-        todo!("spec-01: implement FileSource::load")
+        let ext = self
+            .path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        ext_to_mime(&ext).ok_or_else(|| AppError::UnsupportedFormat(ext.clone()))?;
+
+        let reader = c2pa::Reader::default().with_file(&self.path);
+        match reader {
+            Err(c2pa::Error::JumbfNotFound) | Err(c2pa::Error::ProvenanceMissing) => {
+                tracing::warn!("no C2PA manifest found");
+                Ok(vec![DisplayNode {
+                    key: "status".into(),
+                    value: NodeValue::Str("No C2PA manifest found".into()),
+                    children: vec![],
+                }])
+            }
+            Err(e) => Err(AppError::C2pa(e)),
+            Ok(reader) => {
+                tracing::debug!("manifest loaded successfully");
+                Ok(store_to_nodes(&reader))
+            }
+        }
     }
 }
 
@@ -63,9 +109,24 @@ impl DirSource {
         Self { path, label }
     }
 
-    /// Enumerate all supported files. Stub: returns empty vec. Implemented in spec-01.
-    pub fn entries(&self) -> crate::error::Result<Vec<FileSource>> {
-        todo!("spec-01: implement DirSource::entries")
+    /// Enumerate all supported files in the directory, sorted by name.
+    pub fn entries(&self) -> Result<Vec<FileSource>> {
+        let mut sources = Vec::new();
+        for entry in WalkDir::new(&self.path).sort_by_file_name() {
+            let entry = entry?;
+            if entry.file_type().is_file() {
+                let ext = entry
+                    .path()
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+                if ext_to_mime(&ext).is_some() {
+                    sources.push(FileSource::new(entry.path().to_path_buf()));
+                }
+            }
+        }
+        Ok(sources)
     }
 }
 
@@ -75,8 +136,35 @@ impl ManifestSource for DirSource {
         &self.label
     }
 
-    async fn load(&self, _client: &RemoteClient) -> Result<Vec<DisplayNode>> {
-        todo!("spec-01: implement DirSource::load")
+    /// Load all supported files in the directory sequentially.
+    ///
+    /// Each file's nodes are wrapped under a parent node keyed by the filename.
+    /// If a file fails to parse, an error node is produced instead of aborting.
+    async fn load(&self, client: &RemoteClient) -> Result<Vec<DisplayNode>> {
+        let entries = self.entries()?;
+        let mut nodes = Vec::new();
+        for file_source in entries {
+            let filename = file_source
+                .path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("<unknown>")
+                .to_owned();
+            let file_nodes = match file_source.load(client).await {
+                Ok(ns) => ns,
+                Err(e) => vec![DisplayNode {
+                    key: "error".into(),
+                    value: NodeValue::Str(e.to_string()),
+                    children: vec![],
+                }],
+            };
+            nodes.push(DisplayNode {
+                key: filename,
+                value: NodeValue::Missing,
+                children: file_nodes,
+            });
+        }
+        Ok(nodes)
     }
 }
 
@@ -162,5 +250,35 @@ mod tests {
         let url = Url::parse("https://example.com/asset.png").unwrap();
         let src = RemoteSource::new(url, Auth::None);
         assert!(src.is_remote());
+    }
+
+    #[tokio::test]
+    async fn unsupported_ext_returns_error() {
+        let src = FileSource::new(PathBuf::from("/tmp/test.txt"));
+        let client = RemoteClient::default();
+        let result = src.load(&client).await;
+        assert!(matches!(result, Err(AppError::UnsupportedFormat(_))));
+    }
+
+    #[test]
+    fn dir_entries_returns_only_supported_files() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let tmp_path = tmp.path();
+        fs::write(tmp_path.join("a.jpg"), b"").unwrap();
+        fs::write(tmp_path.join("b.png"), b"").unwrap();
+        fs::write(tmp_path.join("c.txt"), b"").unwrap();
+
+        let src = DirSource::new(tmp_path.to_path_buf());
+        let entries = src.entries().unwrap();
+        assert_eq!(entries.len(), 2);
+        let names: Vec<String> = entries
+            .iter()
+            .map(|e| e.path.file_name().unwrap().to_str().unwrap().to_owned())
+            .collect();
+        assert!(names.contains(&"a.jpg".to_owned()));
+        assert!(names.contains(&"b.png".to_owned()));
     }
 }
