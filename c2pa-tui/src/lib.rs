@@ -15,4 +15,4 @@ pub mod remote;
 /// Fuzzy search over manifest fields.
 pub mod search;
 #[allow(dead_code)]
-pub(crate) mod ui;
+pub mod ui;
