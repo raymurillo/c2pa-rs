@@ -195,8 +195,38 @@ impl ManifestSource for RemoteSource {
         true
     }
 
-    async fn load(&self, _client: &RemoteClient) -> Result<Vec<DisplayNode>> {
-        todo!("spec-02: implement RemoteSource::load")
+    async fn load(&self, client: &RemoteClient) -> Result<Vec<DisplayNode>> {
+        use std::io::Write;
+
+        let bytes = client.fetch(&self.url, &self.auth).await?;
+
+        // Write to a named temp file so c2pa can detect format by extension.
+        // Derive the extension from the URL path and allowlist it to prevent unexpected
+        // characters (path separators, null bytes, overly long strings) from reaching
+        // the filesystem via the suffix. Fall back to ".bin" for unknown extensions.
+        let raw_ext = self
+            .url
+            .path_segments()
+            .and_then(|mut segs| segs.next_back())
+            .and_then(|seg| seg.rsplit('.').next())
+            .unwrap_or("bin");
+        let ext = if raw_ext.len() <= 10 && raw_ext.chars().all(|c| c.is_ascii_alphanumeric()) {
+            raw_ext
+        } else {
+            "bin"
+        };
+        let mut tmp = tempfile::Builder::new()
+            .suffix(&format!(".{ext}"))
+            .tempfile()?;
+        tmp.write_all(&bytes)?;
+        tmp.flush()?;
+
+        let path = tmp.path().to_path_buf();
+        let src = FileSource::new(path);
+        // keep tmp alive until load completes so the temp file isn't deleted early
+        let result = src.load(client).await;
+        drop(tmp);
+        result
     }
 }
 

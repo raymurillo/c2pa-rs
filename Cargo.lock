@@ -617,6 +617,7 @@ name = "c2pa-tui"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bytes",
  "c2pa",
  "clap",
  "crossterm",

@@ -1,4 +1,7 @@
-use crate::error::Result;
+use bytes::Bytes;
+
+use crate::error::{AppError, Result};
+use crate::remote::Auth;
 
 /// HTTP client used for fetching remote manifests.
 #[derive(Debug, Clone)]
@@ -8,15 +11,79 @@ pub struct RemoteClient {
 
 impl RemoteClient {
     /// Construct a new `RemoteClient` with sensible defaults.
-    ///
-    /// Stub: not yet implemented. Implemented in spec-02.
     pub fn new() -> Result<Self> {
-        todo!("spec-02: implement RemoteClient::new")
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .user_agent(concat!("c2pa-tui/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .map_err(AppError::Http)?;
+        Ok(Self { inner: client })
     }
 
     /// Return a reference to the inner `reqwest::Client`.
     pub fn client(&self) -> &reqwest::Client {
         &self.inner
+    }
+
+    /// Fetch raw asset bytes from a URL, applying authentication and retrying on
+    /// transient network errors (up to 2 retries with exponential back-off).
+    ///
+    /// Returns `AppError::Auth` on 401/403, `AppError::NoManifest` on 404.
+    #[tracing::instrument(skip(self, auth), fields(url = %url))]
+    pub async fn fetch(&self, url: &url::Url, auth: &Auth) -> Result<Bytes> {
+        // Reject anything that isn't http or https regardless of how the URL was constructed.
+        let scheme = url.scheme();
+        if scheme != "http" && scheme != "https" {
+            return Err(AppError::UnsupportedFormat(format!(
+                "unsupported URL scheme {scheme:?}; only http and https are allowed"
+            )));
+        }
+
+        // Basic and Digest credentials would be transmitted in cleartext over plain HTTP.
+        // Refuse rather than silently leak credentials.
+        if scheme == "http" && matches!(auth, Auth::Basic { .. } | Auth::Digest { .. }) {
+            return Err(AppError::Auth(
+                "Basic and Digest authentication require HTTPS; refusing to send \
+                 credentials over an unencrypted connection"
+                    .into(),
+            ));
+        }
+
+        let mut attempts = 0u8;
+        loop {
+            let builder = self.inner.get(url.as_str());
+            let builder = auth.apply(builder);
+            let response = builder.send().await;
+            match response {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if status == reqwest::StatusCode::UNAUTHORIZED
+                        || status == reqwest::StatusCode::FORBIDDEN
+                    {
+                        return Err(AppError::Auth(format!("HTTP {status} from {url}")));
+                    }
+                    if status == reqwest::StatusCode::NOT_FOUND {
+                        return Err(AppError::NoManifest(url.to_string()));
+                    }
+                    if !status.is_success() {
+                        // error_for_status() returns Err for non-2xx; safe to expect here
+                        // only because we just confirmed !status.is_success() above.
+                        return Err(AppError::Http(
+                            resp.error_for_status()
+                                .expect_err("status confirmed non-success"),
+                        ));
+                    }
+                    return resp.bytes().await.map_err(AppError::Http);
+                }
+                Err(e) if attempts < 2 && e.is_connect() => {
+                    attempts += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(300 * u64::from(attempts)))
+                        .await;
+                }
+                Err(e) => return Err(AppError::Http(e)),
+            }
+        }
     }
 }
 
@@ -35,7 +102,6 @@ mod tests {
     #[test]
     fn default_constructs_without_panic() {
         let client = RemoteClient::default();
-        // Verify client() accessor returns a reference (doesn't panic).
         let _ = client.client();
     }
 
@@ -43,8 +109,33 @@ mod tests {
     fn clone_preserves_client() {
         let c1 = RemoteClient::default();
         let c2 = c1.clone();
-        // Both accessors should succeed without panic.
         let _ = c1.client();
         let _ = c2.client();
+    }
+
+    #[tokio::test]
+    async fn fetch_rejects_non_http_scheme() {
+        let client = RemoteClient::new().unwrap();
+        let url = url::Url::parse("ftp://example.com/asset.jpg").unwrap();
+        let err = client.fetch(&url, &Auth::None).await.unwrap_err();
+        assert!(matches!(err, AppError::UnsupportedFormat(_)));
+    }
+
+    #[tokio::test]
+    async fn fetch_rejects_basic_auth_over_http() {
+        let client = RemoteClient::new().unwrap();
+        let url = url::Url::parse("http://example.com/asset.jpg").unwrap();
+        let auth = Auth::from_spec("basic:user:pass").unwrap();
+        let err = client.fetch(&url, &auth).await.unwrap_err();
+        assert!(matches!(err, AppError::Auth(_)));
+    }
+
+    #[tokio::test]
+    async fn fetch_rejects_digest_auth_over_http() {
+        let client = RemoteClient::new().unwrap();
+        let url = url::Url::parse("http://example.com/asset.jpg").unwrap();
+        let auth = Auth::from_spec("digest:user:pass").unwrap();
+        let err = client.fetch(&url, &auth).await.unwrap_err();
+        assert!(matches!(err, AppError::Auth(_)));
     }
 }
