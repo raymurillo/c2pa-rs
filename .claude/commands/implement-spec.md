@@ -1,7 +1,7 @@
 # Implement Specification
 
 ## Purpose
-Implement a specification document from the `specs/` directory into working code.
+Implement a specification document from the `specs/` directory in the current worktree into working code.
 
 ## Usage
 ```
@@ -10,7 +10,7 @@ Implement a specification document from the `specs/` directory into working code
 
 ## Workflow
 
-1. **Read the specification document** from `specs/<spec-id>-*.md`
+1. **Read the specification document** from the current worktree `specs/<spec-id>-*.md`
 2. **Analyze the current codebase** to understand existing implementation
 3. **Plan the implementation** by identifying:
    - New files to create
