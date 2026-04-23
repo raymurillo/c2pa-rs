@@ -77,9 +77,15 @@ pub fn apply(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder
         Auth::Bearer { token } =>
             builder.bearer_auth(token),
         Auth::Digest { username, password } => {
-            // reqwest does not natively support Digest auth.
-            // Apply Basic as a fallback and document this limitation.
-            // A future improvement could use a dedicated digest-auth crate.
+            // reqwest does not natively support Digest auth. We fall back to
+            // Basic auth, which is a security downgrade (credentials in plaintext
+            // rather than hashed). This is acceptable only over HTTPS. Emit a
+            // warning so operators are aware; a future improvement could integrate
+            // a dedicated digest-auth crate.
+            tracing::warn!(
+                "Digest auth is not supported by reqwest; falling back to Basic auth. \
+                 Ensure the connection uses HTTPS."
+            );
             builder.basic_auth(username, Some(password))
         }
     }
@@ -135,10 +141,11 @@ impl RemoteClient {
                         return Err(AppError::NoManifest(url.to_string()));
                     }
                     if !status.is_success() {
+                        // error_for_status() returns Err for non-2xx; safe to unwrap_err here
+                        // only because we just confirmed !status.is_success() above.
                         return Err(AppError::Http(
-                            // reqwest doesn't expose arbitrary status errors directly;
-                            // use resp.error_for_status() to convert
-                            resp.error_for_status().unwrap_err()
+                            resp.error_for_status()
+                                .expect_err("status confirmed non-success")
                         ));
                     }
                     return resp.bytes().await.map_err(AppError::Http);

@@ -68,7 +68,6 @@ c2pa-tui/
 | `reqwest` (rustls-tls) | HTTP client for remote manifests |
 | `clap` (derive) | CLI argument parsing |
 | `thiserror` | structured domain-specific error types |
-| `anyhow` | error context wrapping at call sites |
 | `serde_json` | raw JSON rendering in detail view |
 | `nucleo` | fuzzy/substring matching engine |
 | `tui-tree-widget` | collapsible tree widget for ratatui |
@@ -250,19 +249,21 @@ States:
   Searching    — search bar active, results highlighted in detail pane
   Filtering    — filter bar active
   Comparing    — two manifests selected, diff view in right pane
-  Loading      — async spinner while a remote/dir source loads
   Error(msg)   — transient error overlay
+
+Note: in-flight loads are tracked via `App::loading_indices: HashSet<usize>`
+rather than a Loading state, allowing multiple concurrent loads.
 ```
 
 The `App` struct holds:
-- `sources: Vec<Box<dyn ManifestSource>>`
+- `sources: Vec<Arc<dyn ManifestSource>>` — Arc enables cheap clone into background tasks
 - `loaded: HashMap<usize, Vec<DisplayNode>>` — cached after first load
+- `loading_indices: HashSet<usize>` — indices of currently in-flight loads
 - `selected_left: usize` — file list cursor
 - `compare_selection: Option<usize>` — second file for diff mode
 - `filter: FieldFilter`
 - `matcher: Matcher`
 - `state: AppState`
-- `tokio_rt: tokio::runtime::Handle` — for spawning background loads
 
 ---
 

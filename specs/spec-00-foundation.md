@@ -90,10 +90,12 @@ walkdir       = "2"
 url           = "2"
 glob          = "0.3"
 tracing       = "0.1"
-anyhow        = "1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+indexmap      = "2"
+futures       = "0.3"
+tempfile      = "3"
 
 [dev-dependencies]
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 insta    = { version = "1", features = ["filters"] }
 wiremock = "0.6"
 mockall  = "0.13"
@@ -507,7 +509,8 @@ pub fn diff(
 ## `src/app.rs` — App struct + AppState stubs
 
 ```rust
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use crate::manifest::loader::ManifestSource;
 use crate::manifest::tree::DisplayNode;
 use crate::manifest::filter::FieldFilter;
@@ -522,13 +525,16 @@ pub enum AppState {
     Searching { query: String },
     Filtering { query: String },
     Comparing,
-    Loading { source_index: usize },
     Error { message: String },
 }
 
 pub struct App {
-    pub sources: Vec<Box<dyn ManifestSource>>,
+    /// Sources are stored as Arc so individual sources can be cloned into
+    /// background tokio tasks without requiring ManifestSource: Clone.
+    pub sources: Vec<Arc<dyn ManifestSource>>,
     pub loaded: HashMap<usize, Vec<DisplayNode>>,
+    /// Indices of sources currently being loaded in background tasks.
+    pub loading_indices: HashSet<usize>,
     pub selected_left: usize,
     pub compare_selection: Option<usize>,
     pub filter: FieldFilter,
@@ -545,7 +551,7 @@ impl App {
     pub async fn run(self) -> Result<()> {
         todo!("spec-05: implement App::run (TUI event loop)")
     }
-    pub fn add_source(&mut self, source: Box<dyn ManifestSource>) {
+    pub fn add_source(&mut self, source: Arc<dyn ManifestSource>) {
         self.sources.push(source);
     }
 }
@@ -655,6 +661,16 @@ cargo test                       # zero tests, but must compile cleanly
 cargo fmt -- --check             # no formatting changes needed
 cargo clippy -- -D warnings      # zero warnings
 ```
+
+**Before running the above**, verify the `c2pa` feature name in `sdk/Cargo.toml`
+of this repo:
+
+```
+grep -A5 '\[features\]' sdk/Cargo.toml
+```
+
+If `v1_api` is not listed, find the correct feature name and update `Cargo.toml`
+accordingly. The build will fail at link time otherwise.
 
 No `todo!()` panics should be reachable at compile time — that's fine for a stub;
 the goal is a clean build so parallel sessions can branch from this commit.

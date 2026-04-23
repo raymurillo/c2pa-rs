@@ -138,7 +138,7 @@ use ratatui::{
 use crate::app::App;
 use crate::compare::FieldDiff;
 
-pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
+pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     let diff = match &app.cached_diff {
         Some(d) => d,
         None => {

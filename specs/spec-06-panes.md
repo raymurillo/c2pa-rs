@@ -44,7 +44,7 @@ use ratatui::{Frame, layout::Rect, widgets::{Block, Borders, List, ListItem, Lis
     style::{Color, Style, Modifier}};
 use crate::app::{App, AppState, Pane};
 
-pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
+pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     let focused = app.focused_pane == Pane::FileList;
     let border_style = if focused {
         Style::default().fg(Color::Yellow)
@@ -53,10 +53,12 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     };
 
     let items: Vec<ListItem> = app.sources.iter().enumerate().map(|(i, src)| {
-        let icon = match &app.state {
-            AppState::Loading { source_index } if *source_index == i => "[~]",
-            _ if app.loaded.contains_key(&i) => "[✓]",
-            _ => "[ ]",
+        let icon = if app.loading_indices.contains(&i) {
+            "[~]"
+        } else if app.loaded.contains_key(&i) {
+            "[✓]"
+        } else {
+            "[ ]"
         };
         // Check error state: if the loaded entry contains a single error node, show [!]
         // For simplicity, use "[✓]" for all loaded entries — error nodes are shown in detail pane
@@ -115,8 +117,23 @@ fn node_to_tree_item<'a>(node: &'a DisplayNode) -> tui_tree_widget::TreeItem<'a,
 
 > **Note:** `tui-tree-widget` requires unique identifiers within a sibling list.
 > If two sibling nodes share the same key (e.g. multiple `[0]`, `[1]` in an array),
-> the identifier must be unique. Use `format!("{}_{}", node.key, index)` as the
-> identifier if collisions are possible. The `display` text can still show just the key.
+> the identifier must be unique. Use the node's **dot-joined path** (not a positional
+> index) as the identifier. A positional `format!("{}_{}", node.key, i)` index will
+> break `TreeState` expand/collapse tracking whenever nodes are reordered or the
+> tree is rebuilt. Pass the accumulated path prefix into `node_to_tree_item`:
+>
+> ```rust
+> fn node_to_tree_item<'a>(node: &'a DisplayNode, path_prefix: &str)
+>     -> tui_tree_widget::TreeItem<'a, String>
+> {
+>     let id = if path_prefix.is_empty() {
+>         node.key.clone()
+>     } else {
+>         format!("{}.{}", path_prefix, node.key)
+>     };
+>     // ... use `id` as the identifier for TreeItem::new / TreeItem::new_leaf
+> }
+> ```
 
 ### `App` additions needed (add to `src/app.rs`)
 
@@ -130,12 +147,20 @@ Also add Space key handling in Browse mode to expand/collapse:
 
 ```rust
 KeyCode::Char(' ') => {
-    // Toggle selected tree node — tui-tree-widget handles this via TreeState
     self.detail_tree_state.toggle_selected();
 }
 ```
 
+> **Do NOT wrap `detail_tree_state` in `RefCell`.** Instead, change all `draw`
+> function signatures in `src/ui/` to take `app: &mut App` (see below). The
+> event loop holds `&mut self`, so `terminal.draw(|f| ui::draw(f, self))` works
+> without any interior-mutability wrapper, and `App` remains `Send`.
+
 ### `draw` function
+
+All `draw` functions in `src/ui/` take `app: &mut App` so that `render_stateful_widget`
+can update `detail_tree_state` (scroll position, open/closed nodes) during rendering
+without requiring `RefCell`. This keeps `App: Send`.
 
 ```rust
 use ratatui::{Frame, layout::Rect, widgets::{Block, Borders}, style::{Color, Style}};
@@ -143,7 +168,7 @@ use tui_tree_widget::Tree;
 use crate::app::{App, Pane};
 use crate::manifest::tree::DisplayNode;
 
-pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
+pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     let focused = app.focused_pane == Pane::Detail;
     let border_style = if focused {
         Style::default().fg(Color::Yellow)
@@ -169,18 +194,9 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
             .border_style(border_style))
         .highlight_style(Style::default().bg(Color::DarkGray));
 
-    frame.render_stateful_widget(tree, area, &mut app.detail_tree_state.clone());
-    // Note: render_stateful_widget requires `&mut state`. Since `app` is `&App`,
-    // you'll need to either make `detail_tree_state` interior-mutable (RefCell)
-    // or change the draw signature to take `&mut App`. Use `RefCell` to keep
-    // the draw functions consistent.
+    frame.render_stateful_widget(tree, area, &mut app.detail_tree_state);
 }
 ```
-
-> **Design note:** `tui_tree_widget::Tree::render_stateful_widget` needs `&mut TreeState`.
-> Since `draw(frame, area, app: &App)` takes a shared reference, wrap `detail_tree_state`
-> in `RefCell<TreeState<String>>` in the `App` struct so it can be mutably borrowed
-> during rendering without changing the `draw` signature to `&mut App`.
 
 ### `apply_filter_and_search`
 
@@ -208,13 +224,18 @@ Render a single line of context-sensitive key hints.
 use ratatui::{Frame, layout::Rect, widgets::Paragraph, style::{Color, Style}};
 use crate::app::{App, AppState};
 
-pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
+pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     let hints = match &app.state {
-        AppState::Browse => "↑/↓:nav  Enter:load  Tab:focus  /:search  f:filter  c:compare  r:reload  ?:help  q:quit",
+        AppState::Browse => {
+            if !app.loading_indices.is_empty() {
+                "Loading…  ↑/↓:nav  q:quit"
+            } else {
+                "↑/↓:nav  Enter:load  Tab:focus  /:search  f:filter  c:compare  r:reload  ?:help  q:quit"
+            }
+        }
         AppState::Searching { .. } => "Type to search  Esc:cancel",
         AppState::Filtering { .. } => "Type glob filter (e.g. assertions.*)  Enter:apply  Esc:cancel",
         AppState::Comparing => "Comparing  Esc:exit compare",
-        AppState::Loading { .. } => "Loading…  q:quit",
         AppState::Error { .. } => "Error — press any key to dismiss",
     };
 
@@ -307,17 +328,22 @@ fn file_list_renders_single_item() {
     // Add a fake source
     // ... (use a TestSource that implements ManifestSource)
     let mut terminal = make_test_terminal(80, 24);
-    terminal.draw(|f| c2pa_tui::ui::draw(f, &app)).unwrap();
-    let buffer = terminal.backend().buffer().clone();
-    insta::assert_snapshot!(buffer_to_string(&buffer));
+    terminal.draw(|f| c2pa_tui::ui::draw(f, &mut app)).unwrap();
+    insta::assert_snapshot!(buffer_to_string(terminal.backend().buffer()));
 }
 
 #[test]
 fn file_list_shows_loading_indicator() {
     let mut app = App::new(Config::default()).unwrap();
-    // Set state to Loading for source 0
-    app.state = AppState::Loading { source_index: 0 };
-    // ... render and snapshot
+    // Simulate source 0 being in flight by inserting into loading_indices
+    app.loading_indices.insert(0);
+    let mut mock = MockManifestSource::new();
+    mock.expect_label().return_const("loading.jpg".to_string());
+    mock.expect_is_remote().return_const(false);
+    app.add_source(std::sync::Arc::new(mock));
+    let mut terminal = make_test_terminal(80, 24);
+    terminal.draw(|f| c2pa_tui::ui::draw(f, &mut app)).unwrap();
+    insta::assert_snapshot!(buffer_to_string(terminal.backend().buffer()));
 }
 ```
 

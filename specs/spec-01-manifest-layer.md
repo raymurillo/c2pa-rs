@@ -120,6 +120,15 @@ concurrently — avoid overwhelming the c2pa parser), collecting results. If any
 fails to parse (e.g. corrupted), include a single error node for that file rather
 than aborting the whole directory.
 
+> **Design note — Directory expansion model:** `DirSource::load()` returns a
+> combined `Vec<DisplayNode>` where each file's nodes are wrapped under a
+> `DisplayNode { key: filename, value: NodeValue::Missing, children: file_nodes }`.
+> **However**, the primary usage pattern (from `main.rs` in spec-09) is to call
+> `DirSource::entries()` directly and add each `FileSource` individually as its
+> own source in `App.sources`. This gives the user one navigable file-list row per
+> file. `DirSource::load()` is a convenience for any caller that wants the
+> aggregate view; `main.rs` must not use it.
+
 ---
 
 ## `manifest/tree.rs` — `store_to_nodes`

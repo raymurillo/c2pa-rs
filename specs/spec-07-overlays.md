@@ -119,7 +119,7 @@ use ratatui::{
 use crate::app::{App, AppState};
 use crate::ui::layout::centered_popup;
 
-pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
+pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     let popup_area = centered_popup(area, 70, 50);
 
     // Split popup: 3 lines for input, rest for results
@@ -222,7 +222,7 @@ use crate::app::{App, AppState};
 use crate::ui::layout::centered_popup;
 use crate::manifest::filter::FieldFilter;
 
-pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
+pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     let popup_area = centered_popup(area, 60, 40);
 
     let chunks = Layout::default()
@@ -289,26 +289,40 @@ fn apply_filter_and_search(app: &App, nodes: &[DisplayNode]) -> Vec<DisplayNode>
         let matched_indices: std::collections::HashSet<usize> =
             app.search_results.iter().map(|r| r.node_index).collect();
 
-        // Flat index the filtered tree and keep only nodes in matched_indices
+        // Flat index the filtered tree and keep only nodes in matched_indices.
+        // FlatNode::path is the full dot-joined path (e.g. "Claim.title"), which
+        // is what we must use for path matching — not just node.key.
         let flat = flatten(&filtered);
-        let matched_paths: std::collections::HashSet<&str> = flat.iter()
+        let matched_paths: std::collections::HashSet<String> = flat.iter()
             .filter(|n| matched_indices.contains(&n.node_index))
-            .map(|n| n.path.as_str())
+            .map(|n| n.path.clone())
             .collect();
 
-        // Prune the tree to keep only paths that had a match (or ancestors of matches)
-        prune_to_matches(&filtered, &matched_paths)
+        prune_to_matches(&filtered, &matched_paths, "")
     } else {
         filtered
     }
 }
 
-/// Keep a node if its path or any descendant path is in `keep_paths`.
-fn prune_to_matches(nodes: &[DisplayNode], keep_paths: &std::collections::HashSet<&str>) -> Vec<DisplayNode> {
+/// Keep a node if its full dot-path or any descendant's full dot-path is in `keep_paths`.
+///
+/// `prefix` is the dot-joined path of the current node's ancestors, used to
+/// reconstruct the full path at each level. This avoids false matches caused by
+/// checking only `node.key` (the local name) rather than the full path.
+fn prune_to_matches(
+    nodes: &[DisplayNode],
+    keep_paths: &std::collections::HashSet<String>,
+    prefix: &str,
+) -> Vec<DisplayNode> {
     let mut result = Vec::new();
     for node in nodes {
-        let children = prune_to_matches(&node.children, keep_paths);
-        if keep_paths.contains(node.key.as_str()) || !children.is_empty() {
+        let path = if prefix.is_empty() {
+            node.key.clone()
+        } else {
+            format!("{}.{}", prefix, node.key)
+        };
+        let children = prune_to_matches(&node.children, keep_paths, &path);
+        if keep_paths.contains(&path) || !children.is_empty() {
             result.push(DisplayNode {
                 key: node.key.clone(),
                 value: node.value.clone(),
