@@ -1,0 +1,8 @@
+[build]
+# tokio_unstable is required by dial9-tokio-telemetry (--features debug-telemetry)
+# and by any crate using tokio-console.  Cargo has no mechanism for per-package
+# rustflags, so this flag applies to the whole workspace.  It is safe to do so:
+# it only unlocks additional Tokio metrics and hook APIs without altering any
+# stable runtime behaviour or ABI compatibility.
+# See: https://docs.rs/tokio/latest/tokio/#unstable-features
+rustflags = ["--cfg", "tokio_unstable"]

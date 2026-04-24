@@ -28,9 +28,25 @@ struct Cli {
     /// Color theme: dark | light | mono
     #[arg(long, default_value = "dark")]
     theme: String,
+
+    /// Directory for dial9 telemetry trace files.
+    /// Defaults to $HOME/.local/share/c2pa-tui/traces.
+    /// Warning: trace files may contain file paths, remote URLs, and auth tokens;
+    /// keep this directory private and do not share trace files untrusted parties.
+    #[cfg(feature = "debug-telemetry")]
+    #[arg(long)]
+    trace_dir: Option<std::path::PathBuf>,
 }
 
 fn main() {
+    // Initialise tracing before everything else so that startup messages
+    // (including the telemetry announcement below) honour RUST_LOG filtering.
+    // app::run() calls try_init() again as a fallback for library consumers.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_writer(std::io::stderr)
+        .try_init();
+
     let cli = Cli::parse();
 
     let auth = Auth::from_spec(&cli.auth).unwrap_or_else(|e| {
@@ -96,8 +112,75 @@ fn main() {
         }
     }
 
-    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-    if let Err(e) = rt.block_on(app.run()) {
+    // Build and run the Tokio runtime.  The telemetry path wraps the runtime in
+    // dial9's TracedRuntime and keeps the TelemetryGuard alive for the entire
+    // duration of block_on so that all events are flushed on exit.
+    #[cfg(feature = "debug-telemetry")]
+    let (result, _telemetry_guard) = {
+        use dial9_tokio_telemetry::telemetry::{RotatingWriter, TracedRuntime};
+
+        let trace_dir = cli.trace_dir.unwrap_or_else(|| {
+            std::env::var_os("HOME")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(std::env::temp_dir)
+                .join(".local/share/c2pa-tui/traces")
+        });
+
+        // Create the trace directory.  Restrict permissions on Unix so trace
+        // files (which may contain auth tokens and file paths) are not
+        // world-readable.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(&trace_dir)
+                .unwrap_or_else(|e| {
+                    eprintln!("error: cannot create trace directory {trace_dir:?}: {e}");
+                    std::process::exit(1);
+                });
+        }
+        #[cfg(not(unix))]
+        std::fs::create_dir_all(&trace_dir).unwrap_or_else(|e| {
+            eprintln!("error: cannot create trace directory {trace_dir:?}: {e}");
+            std::process::exit(1);
+        });
+
+        let trace_path = trace_dir.join("trace.bin");
+        let writer = Box::new(
+            RotatingWriter::new(&trace_path, 20 * 1024 * 1024, 100 * 1024 * 1024)
+                .unwrap_or_else(|e| {
+                    eprintln!("error: cannot open trace file {trace_path:?}: {e}");
+                    std::process::exit(1);
+                }),
+        );
+
+        let mut builder = tokio::runtime::Builder::new_multi_thread();
+        builder.enable_all();
+        let (rt, guard) = TracedRuntime::build_and_start(builder, writer).unwrap_or_else(|e| {
+            eprintln!("error: cannot start traced runtime: {e}");
+            std::process::exit(1);
+        });
+        tracing::info!("dial9 telemetry enabled, traces at: {}", trace_dir.display());
+        let result = rt.block_on(app.run());
+        // Return guard alongside result so it remains alive until after block_on.
+        (result, guard)
+    };
+
+    #[cfg(not(feature = "debug-telemetry"))]
+    let result = {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap_or_else(|e| {
+                eprintln!("error: cannot start runtime: {e}");
+                std::process::exit(1);
+            });
+        rt.block_on(app.run())
+    };
+
+    if let Err(e) = result {
         eprintln!("error: {e}");
         std::process::exit(1);
     }
