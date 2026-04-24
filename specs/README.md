@@ -17,6 +17,17 @@ Foundation   spec-02  Remote HTTP layer      spec-07  Search & filter     Integr
              spec-05  TUI skeleton                                                           │    with_loaded_for_tests)
                                                                                         spec-12  Test coverage gaps
                                                                                         spec-13  Polish & idioms
+                                                                                             │
+                                                                                             ▼
+                                                                              Phase 5 (parallel after spec-13)
+                                                                              spec-14  SSRF & credential safety
+                                                                              spec-16  Hot-path alloc reductions
+                                                                              spec-18  LoadState invariants
+                                                                                             │
+                                                                                             ▼
+                                                                              Phase 6 (parallel after Phase 5)
+                                                                              spec-15  Async-safe Matcher
+                                                                              spec-17  Data model cleanup
 ```
 
 **Phase 4 must run strictly in order: 10 → 11 → 12 → 13.** The specs have
@@ -27,6 +38,9 @@ these cross-spec dependencies:
 | spec-11 | spec-10's `Auth::apply` signature (must update `fetch` atomically) |
 | spec-12 | spec-11's `entries_async()`, `App::with_loaded_for_tests`, and `SourceId` types |
 | spec-13 | spec-12's migration of snapshot tests to `with_loaded_for_tests` (D2 would otherwise break external tests) |
+
+**Phase 5 can run concurrently** (no file overlap between spec-14, spec-16, spec-18).  
+**Phase 6:** spec-15 requires spec-18 (both modify `app.rs`); spec-17 requires spec-16 (both modify `manifest/filter.rs`).
 
 ## Spec summary
 
@@ -46,6 +60,11 @@ these cross-spec dependencies:
 | [spec-11](spec-11-architecture-corrections.md) | 4 | `SourceId` stable key; `App::add_dir`; `entries_async`; `Auth::apply → Result` (A4); `with_loaded_for_tests` | `app.rs`, `manifest/loader.rs`, `main.rs`, `remote/auth.rs`, `remote/client.rs` |
 | [spec-12](spec-12-test-coverage.md) | 4 | State-machine tests; async DirSource tests; HTTP status mapping tests; snapshot suite | `app.rs`, `remote/client.rs`, `manifest/loader.rs`, `tests/snapshot_ui.rs` |
 | [spec-13](spec-13-polish.md) | 4 | `FromStr` for `Auth`; `pub(crate)` field visibility with accessor audit; `Default` rustdoc | `remote/auth.rs`, `main.rs`, `app.rs`, `remote/client.rs`, `tests/snapshot_ui.rs` |
+| [spec-14](spec-14-ssrf-credential-safety.md) | 5 | Redirect policy blocking SSRF; sanitized auth error messages | `remote/client.rs`, `remote/auth.rs` |
+| [spec-15](spec-15-async-safe-matcher.md) | 6 | Non-blocking nucleo via `spawn_blocking`; `Arc<str>` display sharing; remove query clone | `search/matcher.rs`, `app.rs` |
+| [spec-16](spec-16-hot-path-alloc.md) | 5 | `Cow<'_, str>` for `NodeValue::as_str`; path-buffer in filter; depth guard on `flatten_inner` | `manifest/tree.rs`, `manifest/filter.rs` |
+| [spec-17](spec-17-data-model-cleanup.md) | 6 | Unify `apply`/`apply_ref`; `FieldDiff` struct refactor; `AppError::InvalidInput`; decouple error UI text | `manifest/filter.rs`, `compare/diff.rs`, `error.rs`, `app.rs` |
+| [spec-18](spec-18-load-state-invariants.md) | 5 | `LoadState::Failed`; `loading_count()` computed; eager `ext_to_mime` check in `RemoteSource` | `app.rs`, `manifest/loader.rs`, `ui/file_list.rs` |
 
 ## Quality requirements (apply to every spec)
 
