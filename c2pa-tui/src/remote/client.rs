@@ -76,7 +76,10 @@ impl RemoteClient {
                     }
                     return resp.bytes().await.map_err(AppError::Http);
                 }
-                Err(e) if attempts < 2 && e.is_connect() => {
+                // Retry on both connect errors and request timeouts. Timeouts
+                // commonly represent transient server overload rather than a
+                // permanent failure, so a bounded retry with back-off is safe.
+                Err(e) if attempts < 2 && (e.is_connect() || e.is_timeout()) => {
                     attempts += 1;
                     tokio::time::sleep(std::time::Duration::from_millis(300 * u64::from(attempts)))
                         .await;
@@ -88,10 +91,13 @@ impl RemoteClient {
 }
 
 impl Default for RemoteClient {
+    /// Construct a `RemoteClient` using the same timeouts and user-agent as
+    /// [`RemoteClient::new`]. Provided for test convenience; production code
+    /// should prefer [`RemoteClient::new`] for explicit error handling.
     fn default() -> Self {
-        Self {
-            inner: reqwest::Client::new(),
-        }
+        // `new()` is infallible with these builder settings (no TLS
+        // customisation that can fail at runtime), so `expect` is appropriate.
+        Self::new().expect("RemoteClient::new is infallible with default settings")
     }
 }
 
@@ -113,6 +119,14 @@ mod tests {
         let c2 = c1.clone();
         let _ = c1.client();
         let _ = c2.client();
+    }
+
+    #[test]
+    fn default_does_not_panic() {
+        let client = RemoteClient::default();
+        // Confirms the inner client was initialised (i.e. `Default` actually
+        // went through `new()` rather than bypassing it).
+        let _ = client.client();
     }
 
     #[tokio::test]

@@ -14,7 +14,21 @@ struct Cli {
     inputs: Vec<String>,
 
     /// Authentication spec: none | basic:user:pass | bearer:token | digest:user:pass
-    #[arg(long, default_value = "none")]
+    #[arg(
+        long,
+        default_value = "none",
+        long_help = "Authentication spec. Supported schemes:\n\
+          none                    No authentication (default)\n\
+          basic:user:pass         HTTP Basic (HTTPS only)\n\
+          bearer:token            Bearer token\n\
+          digest:user:pass        Digest (HTTPS only; falls back to Basic)\n\
+        \n\
+        Inline secrets are visible in `ps aux` and shell history.\n\
+        Use indirection to avoid exposure:\n\
+          bearer:env:MY_TOKEN     Read token from $MY_TOKEN\n\
+          bearer:file:/path/tok   Read first line of file\n\
+          basic:user:env:MY_PASS  Same for passwords"
+    )]
     auth: String,
 
     /// Initial field filter glob (e.g. "assertions.*")

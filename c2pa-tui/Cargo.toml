@@ -51,3 +51,7 @@ tokio    = { version = "1", features = ["full"] }
 [[bench]]
 name    = "draw"
 harness = false
+
+[[bench]]
+name    = "auth"
+harness = false
