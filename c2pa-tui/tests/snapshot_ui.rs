@@ -117,8 +117,8 @@ fn file_list_renders_single_item() {
 #[test]
 fn file_list_shows_loading_indicator() {
     let mut app = App::new(Config::default()).unwrap();
-    app.add_source(TestSource::new("loading.jpg"));
-    app.loaded.insert(0, LoadState::Loading);
+    let id = app.add_source(TestSource::new("loading.jpg"));
+    app.loaded.insert(id, LoadState::Loading);
     app.loading_count = 1;
 
     let mut terminal = make_test_terminal(80, 24);
@@ -134,8 +134,8 @@ fn file_list_shows_loading_indicator() {
 #[test]
 fn file_list_shows_loaded_indicator() {
     let mut app = App::new(Config::default()).unwrap();
-    app.add_source(TestSource::new("loaded.jpg"));
-    app.loaded.insert(0, LoadState::Loaded(vec![]));
+    let id = app.add_source(TestSource::new("loaded.jpg"));
+    app.loaded.insert(id, LoadState::Loaded(vec![]));
 
     let mut terminal = make_test_terminal(80, 24);
     terminal.draw(|f| c2pa_tui::ui::draw(f, &mut app)).unwrap();
@@ -166,10 +166,10 @@ fn file_list_shows_remote_suffix() {
 #[test]
 fn detail_pane_renders_loaded_tree() {
     let mut app = App::new(Config::default()).unwrap();
-    app.add_source(TestSource::new("asset.jpg"));
+    let id = app.add_source(TestSource::new("asset.jpg"));
 
     let nodes = vec![make_branch("Claim", vec![make_leaf("title", "My Photo")])];
-    app.loaded.insert(0, LoadState::Loaded(nodes));
+    app.loaded.insert(id, LoadState::Loaded(nodes));
 
     let mut terminal = make_test_terminal(80, 24);
     terminal.draw(|f| c2pa_tui::ui::draw(f, &mut app)).unwrap();
@@ -201,8 +201,8 @@ fn status_bar_shows_browse_hints() {
 #[test]
 fn status_bar_shows_loading_message_when_loading() {
     let mut app = App::new(Config::default()).unwrap();
-    app.add_source(TestSource::new("loading.jpg"));
-    app.loaded.insert(0, LoadState::Loading);
+    let id = app.add_source(TestSource::new("loading.jpg"));
+    app.loaded.insert(id, LoadState::Loading);
     app.loading_count = 1;
 
     let mut terminal = make_test_terminal(80, 24);
@@ -218,8 +218,8 @@ fn status_bar_shows_loading_message_when_loading() {
 #[test]
 fn detail_pane_shows_source_label_as_title() {
     let mut app = App::new(Config::default()).unwrap();
-    app.add_source(TestSource::new("photo.jpg"));
-    app.loaded.insert(0, LoadState::Loaded(vec![]));
+    let id = app.add_source(TestSource::new("photo.jpg"));
+    app.loaded.insert(id, LoadState::Loaded(vec![]));
 
     let mut terminal = make_test_terminal(80, 24);
     terminal.draw(|f| c2pa_tui::ui::draw(f, &mut app)).unwrap();
@@ -237,7 +237,7 @@ fn detail_pane_shows_source_label_as_title() {
 
 fn make_app_with_loaded_manifest() -> App {
     let mut app = App::new(Config::default()).unwrap();
-    app.add_source(TestSource::new("test.jpg"));
+    let id = app.add_source(TestSource::new("test.jpg"));
     let nodes = vec![
         make_branch(
             "Claim",
@@ -254,7 +254,7 @@ fn make_app_with_loaded_manifest() -> App {
             )],
         ),
     ];
-    app.loaded.insert(0, LoadState::Loaded(nodes));
+    app.loaded.insert(id, LoadState::Loaded(nodes));
     // Prime the search index so reindex_and_search() only needs to query.
     app.reindex_for_selected();
     app
@@ -305,7 +305,7 @@ fn make_compare_app() -> App {
     let mut app = make_app_with_loaded_manifest();
 
     // Add a second source with slightly different content.
-    app.add_source(TestSource::new("other.jpg"));
+    let right_id = app.add_source(TestSource::new("other.jpg"));
     let nodes_right = vec![
         make_branch(
             "Claim",
@@ -322,8 +322,8 @@ fn make_compare_app() -> App {
             )],
         ),
     ];
-    app.loaded.insert(1, LoadState::Loaded(nodes_right));
-    app.compare_selection = Some(1);
+    app.loaded.insert(right_id, LoadState::Loaded(nodes_right));
+    app.compare_selection = Some(right_id);
     app.state = AppState::Comparing;
     app
 }
@@ -352,9 +352,9 @@ fn compare_view_show_all_includes_equal_rows() {
 fn compare_view_no_diff_loaded_shows_placeholder() {
     let mut app = App::new(Config::default()).unwrap();
     app.add_source(TestSource::new("a.jpg"));
-    app.add_source(TestSource::new("b.jpg"));
+    let b_id = app.add_source(TestSource::new("b.jpg"));
     // Neither source has been loaded — compare_selection set without loaded data.
-    app.compare_selection = Some(1);
+    app.compare_selection = Some(b_id);
     app.state = AppState::Comparing;
 
     let mut terminal = make_test_terminal(100, 24);
@@ -401,7 +401,10 @@ fn help_overlay_shows_key_bindings() {
     assert!(content.contains("q / Ctrl+C"), "should show quit binding");
     // Detail-pane bindings must all be visible — previously clipped by fixed 70% height.
     assert!(content.contains("Expand all"), "E binding must be visible");
-    assert!(content.contains("Collapse all"), "W binding must be visible");
+    assert!(
+        content.contains("Collapse all"),
+        "W binding must be visible"
+    );
     assert!(content.contains("hide empty"), "e binding must be visible");
     insta::assert_snapshot!(content);
 }
@@ -409,7 +412,7 @@ fn help_overlay_shows_key_bindings() {
 #[test]
 fn detail_pane_hide_empty_removes_blank_fields() {
     let mut app = App::new(Config::default()).unwrap();
-    app.add_source(TestSource::new("test.jpg"));
+    let id = app.add_source(TestSource::new("test.jpg"));
     let nodes = vec![make_branch(
         "Claim",
         vec![
@@ -425,7 +428,7 @@ fn detail_pane_hide_empty_removes_blank_fields() {
             },
         ],
     )];
-    app.loaded.insert(0, LoadState::Loaded(nodes));
+    app.loaded.insert(id, LoadState::Loaded(nodes));
     app.focused_pane = c2pa_tui::app::Pane::Detail;
     app.hide_empty = true;
     // Expand the Claim node so its leaf children are visible in the render.
@@ -435,8 +438,14 @@ fn detail_pane_hide_empty_removes_blank_fields() {
     terminal.draw(|f| c2pa_tui::ui::draw(f, &mut app)).unwrap();
     let content = buffer_to_string(terminal.backend().buffer());
 
-    assert!(content.contains("title"), "non-empty leaf must remain visible");
-    assert!(content.contains("format"), "non-empty leaf must remain visible");
+    assert!(
+        content.contains("title"),
+        "non-empty leaf must remain visible"
+    );
+    assert!(
+        content.contains("format"),
+        "non-empty leaf must remain visible"
+    );
     assert!(
         !content.contains("description"),
         "empty-string leaf must be hidden"
@@ -455,9 +464,9 @@ fn light_theme_renders_loaded_manifest() {
         ..Config::default()
     };
     let mut app = App::new(config).unwrap();
-    app.add_source(TestSource::new("photo.jpg"));
+    let id = app.add_source(TestSource::new("photo.jpg"));
     let nodes = vec![make_branch("Claim", vec![make_leaf("title", "My Photo")])];
-    app.loaded.insert(0, LoadState::Loaded(nodes));
+    app.loaded.insert(id, LoadState::Loaded(nodes));
 
     let mut terminal = make_test_terminal(80, 24);
     terminal.draw(|f| c2pa_tui::ui::draw(f, &mut app)).unwrap();
@@ -473,9 +482,9 @@ fn mono_theme_renders_loaded_manifest() {
         ..Config::default()
     };
     let mut app = App::new(config).unwrap();
-    app.add_source(TestSource::new("photo.jpg"));
+    let id = app.add_source(TestSource::new("photo.jpg"));
     let nodes = vec![make_branch("Claim", vec![make_leaf("title", "My Photo")])];
-    app.loaded.insert(0, LoadState::Loaded(nodes));
+    app.loaded.insert(id, LoadState::Loaded(nodes));
 
     let mut terminal = make_test_terminal(80, 24);
     terminal.draw(|f| c2pa_tui::ui::draw(f, &mut app)).unwrap();

@@ -19,9 +19,9 @@ use crate::compare::diff::{diff, FieldDiff};
 /// Colour-codes rows: yellow = changed, red = only left, green = only right.
 /// Equal rows are shown only when `app.show_all_diffs` is true.
 pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
-    let (left_idx, right_idx) = match app.compare_selection {
-        Some(r) => (app.selected_left, r),
-        None => {
+    let (left_id, right_id) = match (app.selected_left, app.compare_selection) {
+        (Some(l), Some(r)) => (l, r),
+        _ => {
             draw_placeholder(frame, area, "Select two files with 'c' to compare");
             return;
         }
@@ -29,20 +29,18 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
 
     // Labels are needed for both the column headers and (when cold) diff computation.
     let left_label = app
-        .sources
-        .get(left_idx)
+        .source_by_id(left_id)
         .map(|s| s.label().to_owned())
-        .unwrap_or_else(|| format!("source {left_idx}"));
+        .unwrap_or_else(|| left_id.to_string());
     let right_label = app
-        .sources
-        .get(right_idx)
+        .source_by_id(right_id)
         .map(|s| s.label().to_owned())
-        .unwrap_or_else(|| format!("source {right_idx}"));
+        .unwrap_or_else(|| right_id.to_string());
 
     // Populate the cache if it is cold — clones happen at most once per
     // comparison pair or per reload, never on every frame.
     if app.compare_diff_cache.is_none() {
-        let left_nodes = match app.loaded.get(&left_idx) {
+        let left_nodes = match app.loaded.get(&left_id) {
             Some(LoadState::Loaded(n)) => n.clone(),
             _ => {
                 draw_placeholder(
@@ -53,7 +51,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
                 return;
             }
         };
-        let right_nodes = match app.loaded.get(&right_idx) {
+        let right_nodes = match app.loaded.get(&right_id) {
             Some(LoadState::Loaded(n)) => n.clone(),
             _ => {
                 draw_placeholder(

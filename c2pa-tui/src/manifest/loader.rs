@@ -95,21 +95,28 @@ impl ManifestSource for FileSource {
     }
 }
 
-/// A manifest source backed by a directory of files.
+/// A directory of files, expanded into individual [`FileSource`] entries by
+/// [`DirSource::entries`] / [`DirSource::entries_async`].
+///
+/// `DirSource` is intentionally *not* a [`ManifestSource`]: each file must be
+/// its own row in the UI so individual manifests can be selected, reloaded,
+/// and compared independently.
 pub struct DirSource {
     /// Path to the directory.
     pub path: PathBuf,
-    label: String,
 }
 
 impl DirSource {
     /// Create a new `DirSource` from the given directory path.
     pub fn new(path: PathBuf) -> Self {
-        let label = path.display().to_string();
-        Self { path, label }
+        Self { path }
     }
 
     /// Enumerate all supported files in the directory, sorted by name.
+    ///
+    /// This method performs blocking filesystem I/O via `walkdir`.  When
+    /// invoking from an async context, prefer [`DirSource::entries_async`]
+    /// which offloads the traversal to the tokio blocking thread pool.
     pub fn entries(&self) -> Result<Vec<FileSource>> {
         let mut sources = Vec::new();
         for entry in WalkDir::new(&self.path).sort_by_file_name() {
@@ -128,45 +135,27 @@ impl DirSource {
         }
         Ok(sources)
     }
-}
 
-#[async_trait]
-impl ManifestSource for DirSource {
-    fn label(&self) -> &str {
-        &self.label
-    }
-
-    /// Load all supported files in the directory sequentially.
+    /// Async variant of [`DirSource::entries`] that offloads the blocking
+    /// `walkdir` traversal to the tokio blocking thread pool.
     ///
-    /// Each file's nodes are wrapped under a parent node keyed by the filename.
-    /// If a file fails to parse, an error node is produced instead of aborting.
-    async fn load(&self, client: &RemoteClient) -> Result<Vec<DisplayNode>> {
-        let entries = self.entries()?;
-        let mut nodes = Vec::new();
-        for file_source in entries {
-            let filename = file_source
-                .path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("<unknown>")
-                .to_owned();
-            let file_nodes = match file_source.load(client).await {
-                Ok(ns) => ns,
-                Err(e) => vec![DisplayNode {
-                    key: "error".into(),
-                    value: NodeValue::Str(e.to_string()),
-                    children: vec![],
-                }],
-            };
-            nodes.push(DisplayNode {
-                key: filename,
-                value: NodeValue::Missing,
-                children: file_nodes,
-            });
-        }
-        Ok(nodes)
+    /// Use this from async contexts (e.g. `App::add_dir`) so directory reads
+    /// never block the async runtime's worker threads.
+    pub async fn entries_async(&self) -> Result<Vec<FileSource>> {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || DirSource::new(path).entries())
+            .await
+            .map_err(|e| {
+                AppError::Io(std::io::Error::other(format!(
+                    "blocking walkdir task failed: {e}"
+                )))
+            })?
     }
 }
+
+// Note: `DirSource` intentionally does not implement `ManifestSource`.
+// Directories are expanded into individual `FileSource` entries via
+// `App::add_dir()` so each file becomes its own selectable row in the UI.
 
 /// A manifest source backed by a remote HTTP URL.
 pub struct RemoteSource {
@@ -254,17 +243,13 @@ mod tests {
     }
 
     #[test]
-    fn dir_source_label_matches_path() {
+    fn dir_source_stores_path() {
+        // `DirSource` is no longer a `ManifestSource` — it is an enumerator
+        // that `App::add_dir` unfolds into individual `FileSource` rows.
+        // The only invariant to verify is that the path round-trips.
         let path = PathBuf::from("/tmp/manifests");
         let src = DirSource::new(path.clone());
-        assert_eq!(src.label(), "/tmp/manifests");
         assert_eq!(src.path, path);
-    }
-
-    #[test]
-    fn dir_source_is_not_remote() {
-        let src = DirSource::new(PathBuf::from("/tmp/dir"));
-        assert!(!src.is_remote());
     }
 
     #[test]
@@ -314,5 +299,25 @@ mod tests {
             .collect();
         assert!(names.contains(&"a.jpg".to_owned()));
         assert!(names.contains(&"b.png".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn entries_async_returns_same_results_as_sync() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let tmp_path = tmp.path();
+        fs::write(tmp_path.join("a.jpg"), b"").unwrap();
+        fs::write(tmp_path.join("b.png"), b"").unwrap();
+        fs::write(tmp_path.join("c.txt"), b"").unwrap();
+
+        let dir = DirSource::new(tmp_path.to_path_buf());
+        let sync_entries = dir.entries().unwrap();
+        let async_entries = dir.entries_async().await.unwrap();
+        assert_eq!(
+            sync_entries.iter().map(|e| &e.path).collect::<Vec<_>>(),
+            async_entries.iter().map(|e| &e.path).collect::<Vec<_>>(),
+        );
     }
 }

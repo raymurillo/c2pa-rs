@@ -18,9 +18,7 @@ fn traced_runtime_runs_and_writes_trace_file() {
     // RotatingWriter appends an index: trace.bin -> trace.0.bin
     let trace_segment = dir.path().join("trace.0.bin");
 
-    let writer = Box::new(
-        RotatingWriter::new(&trace_base, 1024 * 1024, 4 * 1024 * 1024).unwrap(),
-    );
+    let writer = Box::new(RotatingWriter::new(&trace_base, 1024 * 1024, 4 * 1024 * 1024).unwrap());
     let mut builder = tokio::runtime::Builder::new_multi_thread();
     builder.enable_all();
     let (rt, guard) = TracedRuntime::build_and_start(builder, writer).unwrap();
@@ -57,5 +55,8 @@ fn trace_directory_has_owner_only_permissions() {
         .unwrap();
 
     let perm_bits = std::fs::metadata(&trace_dir).unwrap().mode() & 0o777;
-    assert_eq!(perm_bits, 0o700, "trace directory must be owner-only (0700)");
+    assert_eq!(
+        perm_bits, 0o700,
+        "trace directory must be owner-only (0700)"
+    );
 }

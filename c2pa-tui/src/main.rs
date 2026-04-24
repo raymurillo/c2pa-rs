@@ -1,7 +1,7 @@
 use c2pa_tui::{
     app::App,
     config::{Config, Theme},
-    manifest::loader::{DirSource, FileSource, RemoteSource},
+    manifest::loader::{FileSource, RemoteSource},
     remote::Auth,
 };
 use clap::Parser;
@@ -98,32 +98,35 @@ fn main() {
         }
     }
 
-    // Populate sources from CLI inputs.
-    // Directories are expanded into individual FileSource entries so each file
-    // gets its own row in the file list.
+    // URL sources are populated synchronously — directories are deferred to
+    // `App::add_dir` inside `block_on` below so walkdir runs on the tokio
+    // blocking pool rather than stalling the async runtime.
+    //
+    // Partition the CLI inputs once so the tokio block body stays small.
+    let mut url_inputs: Vec<url::Url> = Vec::new();
+    let mut dir_inputs: Vec<std::path::PathBuf> = Vec::new();
+    let mut file_inputs: Vec<std::path::PathBuf> = Vec::new();
     for input in &cli.inputs {
         if input.starts_with("http://") || input.starts_with("https://") {
             match url::Url::parse(input) {
-                Ok(url) => {
-                    app.add_source(std::sync::Arc::new(RemoteSource::new(url, auth.clone())))
-                }
+                Ok(url) => url_inputs.push(url),
                 Err(e) => eprintln!("warning: invalid URL {input:?}: {e}"),
             }
         } else {
             let path = std::path::PathBuf::from(input);
             if path.is_dir() {
-                match DirSource::new(path.clone()).entries() {
-                    Ok(entries) => {
-                        for file_src in entries {
-                            app.add_source(std::sync::Arc::new(file_src));
-                        }
-                    }
-                    Err(e) => eprintln!("warning: could not read directory {path:?}: {e}"),
-                }
+                dir_inputs.push(path);
             } else {
-                app.add_source(std::sync::Arc::new(FileSource::new(path)));
+                file_inputs.push(path);
             }
         }
+    }
+
+    for url in url_inputs {
+        app.add_source(std::sync::Arc::new(RemoteSource::new(url, auth.clone())));
+    }
+    for path in file_inputs {
+        app.add_source(std::sync::Arc::new(FileSource::new(path)));
     }
 
     // Build and run the Tokio runtime.  The telemetry path wraps the runtime in
@@ -163,11 +166,12 @@ fn main() {
 
         let trace_path = trace_dir.join("trace.bin");
         let writer = Box::new(
-            RotatingWriter::new(&trace_path, 20 * 1024 * 1024, 100 * 1024 * 1024)
-                .unwrap_or_else(|e| {
+            RotatingWriter::new(&trace_path, 20 * 1024 * 1024, 100 * 1024 * 1024).unwrap_or_else(
+                |e| {
                     eprintln!("error: cannot open trace file {trace_path:?}: {e}");
                     std::process::exit(1);
-                }),
+                },
+            ),
         );
 
         let mut builder = tokio::runtime::Builder::new_multi_thread();
@@ -176,8 +180,18 @@ fn main() {
             eprintln!("error: cannot start traced runtime: {e}");
             std::process::exit(1);
         });
-        tracing::info!("dial9 telemetry enabled, traces at: {}", trace_dir.display());
-        let result = rt.block_on(app.run());
+        tracing::info!(
+            "dial9 telemetry enabled, traces at: {}",
+            trace_dir.display()
+        );
+        let result = rt.block_on(async move {
+            for path in dir_inputs {
+                if let Err(e) = app.add_dir(path.clone()).await {
+                    eprintln!("warning: could not read directory {path:?}: {e}");
+                }
+            }
+            app.run().await
+        });
         // Return guard alongside result so it remains alive until after block_on.
         (result, guard)
     };
@@ -191,7 +205,14 @@ fn main() {
                 eprintln!("error: cannot start runtime: {e}");
                 std::process::exit(1);
             });
-        rt.block_on(app.run())
+        rt.block_on(async move {
+            for path in dir_inputs {
+                if let Err(e) = app.add_dir(path.clone()).await {
+                    eprintln!("warning: could not read directory {path:?}: {e}");
+                }
+            }
+            app.run().await
+        })
     };
 
     if let Err(e) = result {

@@ -110,11 +110,13 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         Style::default()
     };
 
-    let title: &str = app
-        .sources
-        .get(app.selected_left)
-        .map(|s| s.label())
-        .unwrap_or("Detail");
+    // Title must be an owned String so the immutable borrow of `app.sources`
+    // is released before the `&mut app.detail_tree_state` pass below.
+    let title: String = app
+        .selected_left
+        .and_then(|id| app.source_by_id(id))
+        .map(|s| s.label().to_owned())
+        .unwrap_or_else(|| "Detail".to_owned());
 
     // Read search state before borrowing app.loaded so field borrows don't
     // conflict.  search_result_indices is kept in sync by reindex_and_search
@@ -123,10 +125,13 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         matches!(&app.state, AppState::Searching { .. }) && !app.search_result_indices.is_empty();
     let has_filter = !app.filter.include_paths.is_empty() || !app.filter.exclude_paths.is_empty();
 
-    let raw_nodes = match app.loaded.get(&app.selected_left) {
-        Some(LoadState::Loaded(nodes)) => Some(nodes.as_slice()),
-        _ => None,
-    };
+    let raw_nodes = app
+        .selected_left
+        .and_then(|id| app.loaded.get(&id))
+        .and_then(|s| match s {
+            LoadState::Loaded(nodes) => Some(nodes.as_slice()),
+            _ => None,
+        });
 
     // Two optional filter passes are chained here.  Each pass may or may not
     // allocate; uninitialised `MaybeUninit`-style pattern (declare binding

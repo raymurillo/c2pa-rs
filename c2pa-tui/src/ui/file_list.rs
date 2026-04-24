@@ -18,16 +18,15 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     let items: Vec<ListItem> = app
         .sources
         .iter()
-        .enumerate()
-        .map(|(i, src)| {
-            let icon = match app.loaded.get(&i) {
+        .map(|(sid, src)| {
+            let icon = match app.loaded.get(sid) {
                 Some(LoadState::Loading) => "[~]",
                 Some(LoadState::Loaded(_)) => "[✓]",
                 None => "[ ]",
             };
             let suffix = if src.is_remote() { " (remote)" } else { "" };
             let label = format!("{} {}{}", icon, src.label(), suffix);
-            let style = if i == app.selected_left {
+            let style = if Some(*sid) == app.selected_left {
                 Style::default().add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
@@ -36,8 +35,11 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         })
         .collect();
 
+    // Translate the selected SourceId back to a list position for the
+    // ListState cursor.  None when `sources` is empty or the selection is
+    // stale — ratatui handles `None` as "no selection".
     let mut list_state = ListState::default();
-    list_state.select(Some(app.selected_left));
+    list_state.select(app.selected_left.and_then(|id| app.index_of(id)));
 
     let list = List::new(items)
         .block(

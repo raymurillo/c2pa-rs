@@ -116,11 +116,90 @@ async fn loaded_map_contains_nodes_after_load() {
 
     let mut app = App::new(Config::default()).unwrap();
     let src = Arc::new(FileSource::new("tests/fixtures/signed.jpg".into()));
-    app.add_source(src.clone());
+    let id = app.add_source(src.clone());
 
     let client = RemoteClient::default();
     let nodes = src.load(&client).await.unwrap();
-    app.loaded.insert(0, LoadState::Loaded(nodes));
+    app.loaded.insert(id, LoadState::Loaded(nodes));
 
-    assert!(matches!(app.loaded.get(&0), Some(LoadState::Loaded(n)) if !n.is_empty()));
+    assert!(matches!(app.loaded.get(&id), Some(LoadState::Loaded(n)) if !n.is_empty()));
+}
+
+/// Verify that `App::add_dir` expands a directory into individual sources,
+/// each with a unique `SourceId`.
+#[tokio::test]
+async fn add_dir_creates_individual_sources() {
+    use c2pa_tui::app::App;
+    use c2pa_tui::config::Config;
+
+    let mut app = App::new(Config::default()).unwrap();
+    let ids = app
+        .add_dir("tests/fixtures/".into())
+        .await
+        .expect("add_dir should succeed");
+    assert!(
+        ids.len() >= 2,
+        "directory should expand to multiple sources, got {}",
+        ids.len()
+    );
+    assert_eq!(app.sources.len(), ids.len());
+    let id_set: std::collections::HashSet<_> = ids.iter().copied().collect();
+    assert_eq!(id_set.len(), ids.len(), "each SourceId must be unique");
+    // The first add_source call must initialise `selected_left` to id[0].
+    assert_eq!(app.selected_left, Some(ids[0]));
+}
+
+/// Empty directory: `add_dir` must succeed with no registered sources and
+/// leave `selected_left` unset so the TUI renders an empty file list.
+#[tokio::test]
+async fn add_dir_empty_directory_returns_no_ids() {
+    use c2pa_tui::app::App;
+    use c2pa_tui::config::Config;
+    use tempfile::TempDir;
+
+    let tmp = TempDir::new().unwrap();
+    let mut app = App::new(Config::default()).unwrap();
+    let ids = app
+        .add_dir(tmp.path().to_path_buf())
+        .await
+        .expect("empty dir should not error");
+    assert!(ids.is_empty(), "expected no ids, got {ids:?}");
+    assert!(app.sources.is_empty());
+    assert!(app.selected_left.is_none());
+}
+
+/// Directory containing only unsupported files: behaves identically to an
+/// empty directory — no sources registered.
+#[tokio::test]
+async fn add_dir_skips_unsupported_extensions() {
+    use c2pa_tui::app::App;
+    use c2pa_tui::config::Config;
+    use std::fs;
+    use tempfile::TempDir;
+
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("readme.txt"), b"hello").unwrap();
+    fs::write(tmp.path().join("notes.md"), b"world").unwrap();
+
+    let mut app = App::new(Config::default()).unwrap();
+    let ids = app.add_dir(tmp.path().to_path_buf()).await.unwrap();
+    assert!(ids.is_empty());
+    assert!(app.sources.is_empty());
+}
+
+/// Non-existent path: `add_dir` must propagate the walkdir error rather
+/// than silently succeed, so `main.rs` can surface a warning to the user.
+#[tokio::test]
+async fn add_dir_nonexistent_path_returns_error() {
+    use c2pa_tui::app::App;
+    use c2pa_tui::config::Config;
+
+    let mut app = App::new(Config::default()).unwrap();
+    let result = app
+        .add_dir("/definitely/does/not/exist/c2pa-tui-test".into())
+        .await;
+    assert!(result.is_err(), "expected Err for missing path");
+    // Source list must remain unchanged on error.
+    assert!(app.sources.is_empty());
+    assert!(app.selected_left.is_none());
 }

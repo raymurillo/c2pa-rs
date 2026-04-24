@@ -182,28 +182,21 @@ impl Auth {
     }
 
     /// Apply this auth method to a `reqwest::RequestBuilder`.
-    pub fn apply(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    ///
+    /// Returns `Err(AppError::Auth)` for the `Digest` variant because
+    /// `reqwest` does not implement Digest authentication natively and
+    /// silently falling back to Basic would transmit credentials in plaintext
+    /// (even over HTTPS this is an observable protocol downgrade).  Callers
+    /// should redirect users to `basic:user:pass` if they truly need password
+    /// authentication, or configure the endpoint to accept Bearer tokens.
+    pub fn apply(&self, builder: reqwest::RequestBuilder) -> Result<reqwest::RequestBuilder> {
         match self {
-            Auth::None => builder,
-            Auth::Basic { username, password } => builder.basic_auth(username, Some(password)),
-            Auth::Bearer { token } => builder.bearer_auth(token),
-            Auth::Digest { username, password } => {
-                // reqwest does not natively support Digest auth. We fall back to Basic auth,
-                // which sends credentials in plaintext rather than hashed. This is acceptable
-                // only over HTTPS. A future improvement could integrate a dedicated digest-auth
-                // crate.
-                //
-                // Warn once per process so bulk manifest loads against a Digest endpoint do
-                // not flood logs.
-                static DIGEST_FALLBACK_WARNED: std::sync::Once = std::sync::Once::new();
-                DIGEST_FALLBACK_WARNED.call_once(|| {
-                    tracing::warn!(
-                        "Digest auth is not supported by reqwest; falling back to Basic auth. \
-                         Ensure the connection uses HTTPS."
-                    );
-                });
-                builder.basic_auth(username, Some(password))
-            }
+            Auth::None => Ok(builder),
+            Auth::Basic { username, password } => Ok(builder.basic_auth(username, Some(password))),
+            Auth::Bearer { token } => Ok(builder.bearer_auth(token)),
+            Auth::Digest { .. } => Err(AppError::Auth(
+                "Digest auth is not supported by reqwest; use basic:user:pass instead".into(),
+            )),
         }
     }
 }
@@ -346,6 +339,55 @@ mod tests {
         assert!(dbg.contains("[REDACTED]"));
         assert!(!dbg.contains("hunter2"));
         assert!(dbg.contains("bob"));
+    }
+
+    #[test]
+    fn apply_none_returns_builder_unchanged() {
+        let client = reqwest::Client::new();
+        let builder = client.get("https://example.com");
+        // `let _ =` is required because `RequestBuilder` is `#[must_use]`;
+        // the test only asserts that `apply` returns `Ok` for `Auth::None`.
+        let _ = Auth::None.apply(builder).expect("None apply must succeed");
+    }
+
+    #[test]
+    fn apply_basic_returns_ok() {
+        let auth = Auth::Basic {
+            username: "u".into(),
+            password: "p".into(),
+        };
+        let client = reqwest::Client::new();
+        let builder = client.get("https://example.com");
+        let _ = auth.apply(builder).expect("Basic apply must succeed");
+    }
+
+    #[test]
+    fn apply_bearer_returns_ok() {
+        let auth = Auth::Bearer { token: "t".into() };
+        let client = reqwest::Client::new();
+        let builder = client.get("https://example.com");
+        let _ = auth.apply(builder).expect("Bearer apply must succeed");
+    }
+
+    #[test]
+    fn apply_digest_returns_auth_error() {
+        // Digest is unsupported; `apply` must surface an error rather than
+        // silently downgrading to Basic.  The caller (RemoteClient::fetch)
+        // propagates this as AppError::Auth through the normal error path so
+        // the TUI's AppState::Error overlay can display it.
+        let auth = Auth::Digest {
+            username: "u".into(),
+            password: "p".into(),
+        };
+        let client = reqwest::Client::new();
+        let builder = client.get("https://example.com");
+        let err = auth.apply(builder).unwrap_err();
+        assert!(matches!(err, AppError::Auth(_)));
+        let msg = format!("{err}");
+        assert!(
+            msg.to_lowercase().contains("digest"),
+            "error message should mention Digest: {msg}"
+        );
     }
 
     #[test]

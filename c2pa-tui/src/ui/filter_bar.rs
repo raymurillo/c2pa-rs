@@ -50,7 +50,8 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
 
     let preview_items: Vec<ListItem> = match filter_result {
         Ok(filter) => {
-            if let Some(LoadState::Loaded(nodes)) = app.loaded.get(&app.selected_left) {
+            let loaded = app.selected_left.and_then(|id| app.loaded.get(&id));
+            if let Some(LoadState::Loaded(nodes)) = loaded {
                 // apply_ref borrows nodes rather than cloning the whole tree up
                 // front — only surviving nodes are allocated.
                 filter

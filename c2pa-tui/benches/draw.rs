@@ -2,11 +2,11 @@ use std::hint::black_box;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
+use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 
-use c2pa_tui::app::{App, AppState, LoadState};
+use c2pa_tui::app::{App, AppState, LoadState, SourceId};
 use c2pa_tui::config::Config;
 use c2pa_tui::manifest::filter::FieldFilter;
 use c2pa_tui::manifest::loader::FileSource;
@@ -112,17 +112,19 @@ fn make_manifest_nodes() -> Vec<DisplayNode> {
 
 fn make_populated_app(source_count: usize, loaded_count: usize) -> App {
     let mut app = make_app();
+    let mut ids: Vec<SourceId> = Vec::with_capacity(source_count);
     for i in 0..source_count {
-        app.add_source(Arc::new(FileSource::new(PathBuf::from(format!(
+        let id = app.add_source(Arc::new(FileSource::new(PathBuf::from(format!(
             "file_{i}.jpg"
         )))));
+        ids.push(id);
         if i < loaded_count {
             app.loaded
-                .insert(i, LoadState::Loaded(make_manifest_nodes()));
+                .insert(id, LoadState::Loaded(make_manifest_nodes()));
         }
     }
-    // Point detail pane at a loaded entry so the tree widget actually renders.
-    app.selected_left = 0;
+    // Point detail pane at the first (loaded) entry so the tree widget renders.
+    app.selected_left = ids.first().copied();
     app
 }
 
@@ -394,11 +396,15 @@ fn make_compare_nodes(n: usize, mutate_even: bool) -> Vec<DisplayNode> {
 
 fn make_compare_app_n(n: usize) -> App {
     let mut app = make_populated_app(2, 0);
+    // Capture ids in their registration order.  `sources[0]` is the left
+    // (selected_left) entry seeded by make_populated_app.
+    let left_id = app.id_at(0).expect("left source present");
+    let right_id = app.id_at(1).expect("right source present");
     app.loaded
-        .insert(0, LoadState::Loaded(make_compare_nodes(n, false)));
+        .insert(left_id, LoadState::Loaded(make_compare_nodes(n, false)));
     app.loaded
-        .insert(1, LoadState::Loaded(make_compare_nodes(n, true)));
-    app.compare_selection = Some(1);
+        .insert(right_id, LoadState::Loaded(make_compare_nodes(n, true)));
+    app.compare_selection = Some(right_id);
     app.state = AppState::Comparing;
     app
 }
@@ -483,11 +489,73 @@ fn bench_draw_compare(c: &mut Criterion) {
 // Criterion entry-points
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Spec-11 SourceId lookup benchmarks
+// ---------------------------------------------------------------------------
+//
+// `source_by_id` and `index_of` perform linear scans over `App::sources`.
+// This is acceptable because `sources.len()` is bounded by the number of
+// files the user passes on the command line (typically O(10)).  These
+// benches confirm the cost stays negligible as the fleet grows so future
+// refactors don't accidentally regress into an O(n²) trap.
+
+fn bench_source_id_lookup(c: &mut Criterion) {
+    let sizes = [1usize, 10, 100, 1000];
+
+    // source_by_id: linear scan returning `&Arc<dyn ManifestSource>`.
+    let mut group = c.benchmark_group("app/source_by_id");
+    for n in sizes {
+        let app = make_populated_app(n, 0);
+        // Worst-case: target the last source so the full slice is scanned.
+        let target = app.id_at(n - 1).expect("id present");
+        group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
+            b.iter(|| black_box(app.source_by_id(black_box(target))))
+        });
+    }
+    group.finish();
+
+    // index_of: linear scan returning the list-position index.
+    let mut group = c.benchmark_group("app/index_of");
+    for n in sizes {
+        let app = make_populated_app(n, 0);
+        let target = app.id_at(n - 1).expect("id present");
+        group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
+            b.iter(|| black_box(app.index_of(black_box(target))))
+        });
+    }
+    group.finish();
+
+    // id_at: O(1) indexed access; included as a baseline contrast against
+    // the linear-scan variants above.
+    let mut group = c.benchmark_group("app/id_at");
+    for n in sizes {
+        let app = make_populated_app(n, 0);
+        group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
+            b.iter(|| black_box(app.id_at(black_box(n - 1))))
+        });
+    }
+    group.finish();
+
+    // add_source cost (includes SourceId::next + Vec push).  Measures the
+    // per-source overhead of the stable-id keying scheme.
+    c.bench_function("app/add_source_single", |b| {
+        b.iter_batched(
+            make_app,
+            |mut app| {
+                let id = app.add_source(Arc::new(FileSource::new(PathBuf::from("x.jpg"))));
+                black_box(id);
+            },
+            BatchSize::SmallInput,
+        )
+    });
+}
+
 criterion_group!(
     benches,
     bench_layout,
     bench_draw,
     bench_search,
-    bench_draw_compare
+    bench_draw_compare,
+    bench_source_id_lookup
 );
 criterion_main!(benches);

@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tui_tree_widget::TreeState;
@@ -12,6 +13,57 @@ use crate::manifest::tree::DisplayNode;
 use crate::remote::client::RemoteClient;
 use crate::search::matcher::{MatchResult, Matcher};
 use crate::ui::layout::CachedLayout;
+
+// ---------------------------------------------------------------------------
+// SourceId
+// ---------------------------------------------------------------------------
+
+/// Stable identity for a manifest source.
+///
+/// Assigned at `add_source()` time from a process-wide monotonically
+/// increasing counter.  Unlike a `Vec` index, a `SourceId` remains valid if
+/// other sources are removed or if the `sources` `Vec` is reordered.
+///
+/// ## Stability contract
+///
+/// - **Process-local**: values are assigned by an `AtomicU64` within the
+///   current process; they are *not* stable across runs, *not* portable
+///   across `App` instances, and MUST NOT be persisted to disk, logs, or
+///   any other long-lived store.
+/// - **Opaque**: the wrapped integer is an implementation detail.  Use
+///   [`SourceId`]'s `Display`/`Debug` impls for human-readable output;
+///   callers should not read or construct the numeric value directly.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SourceId(u64);
+
+static NEXT_SOURCE_ID: AtomicU64 = AtomicU64::new(0);
+
+impl SourceId {
+    /// Allocate a new id from the process-wide counter.
+    ///
+    /// Uses `Ordering::Relaxed` because only atomic increment of the counter
+    /// is required — no happens-before synchronisation with other memory is
+    /// needed to establish uniqueness.
+    fn next() -> Self {
+        Self(NEXT_SOURCE_ID.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+/// Prefixed with `src#` so the output is self-describing in error messages
+/// and fallback labels, and cannot be confused with a raw integer identifier.
+impl std::fmt::Display for SourceId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "src#{}", self.0)
+    }
+}
+
+impl std::fmt::Debug for SourceId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Match Display so logs and {:?} output stay consistent — prevents
+        // accidentally surfacing the raw number via tracing spans.
+        std::fmt::Display::fmt(self, f)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -93,14 +145,18 @@ pub enum LoadState {
 /// Top-level application context passed to every draw call and event handler.
 pub struct App {
     /// Sources are stored as `Arc` so they can be cloned into background tokio
-    /// tasks without requiring `ManifestSource: Clone`.
-    pub sources: Vec<Arc<dyn ManifestSource>>,
-    /// Per-source loading state.  A missing entry means "not yet requested".
-    pub loaded: HashMap<usize, LoadState>,
-    /// Index of the source currently shown in the detail pane.
-    pub selected_left: usize,
-    /// Index of the right-side source for comparison, if any.
-    pub compare_selection: Option<usize>,
+    /// tasks without requiring `ManifestSource: Clone`.  Each entry is paired
+    /// with the stable [`SourceId`] assigned at registration time.
+    pub sources: Vec<(SourceId, Arc<dyn ManifestSource>)>,
+    /// Per-source loading state keyed by [`SourceId`].  A missing entry means
+    /// "not yet requested".  Keying by id (not index) means the map survives
+    /// reordering or removal of other sources.
+    pub loaded: HashMap<SourceId, LoadState>,
+    /// Identity of the source currently shown in the detail pane.
+    /// `None` when `sources` is empty — prevents off-by-one panics.
+    pub selected_left: Option<SourceId>,
+    /// Identity of the right-side source for comparison, if any.
+    pub compare_selection: Option<SourceId>,
     /// Active field filter.
     pub filter: FieldFilter,
     /// Fuzzy matcher over flattened nodes.
@@ -180,7 +236,7 @@ impl App {
         Ok(Self {
             sources: Vec::new(),
             loaded: HashMap::new(),
-            selected_left: 0,
+            selected_left: None,
             compare_selection: None,
             filter: FieldFilter::default(),
             matcher: Matcher::new(),
@@ -260,7 +316,8 @@ impl App {
         use futures::StreamExt;
         use tokio::sync::mpsc;
 
-        let (load_tx, mut load_rx) = mpsc::unbounded_channel::<(usize, Result<Vec<DisplayNode>>)>();
+        let (load_tx, mut load_rx) =
+            mpsc::unbounded_channel::<(SourceId, Result<Vec<DisplayNode>>)>();
 
         let mut event_stream = EventStream::new();
 
@@ -276,8 +333,8 @@ impl App {
                         break;
                     }
                 }
-                Some((idx, result)) = load_rx.recv() => {
-                    self.handle_load_result(idx, result);
+                Some((id, result)) = load_rx.recv() => {
+                    self.handle_load_result(id, result);
                 }
             }
         }
@@ -288,7 +345,7 @@ impl App {
     async fn handle_event(
         &mut self,
         event: crossterm::event::Event,
-        load_tx: &tokio::sync::mpsc::UnboundedSender<(usize, Result<Vec<DisplayNode>>)>,
+        load_tx: &tokio::sync::mpsc::UnboundedSender<(SourceId, Result<Vec<DisplayNode>>)>,
     ) -> Result<bool> {
         use crossterm::event::{Event, KeyCode, KeyModifiers};
 
@@ -328,7 +385,7 @@ impl App {
     fn handle_browse_key(
         &mut self,
         key: crossterm::event::KeyEvent,
-        load_tx: &tokio::sync::mpsc::UnboundedSender<(usize, Result<Vec<DisplayNode>>)>,
+        load_tx: &tokio::sync::mpsc::UnboundedSender<(SourceId, Result<Vec<DisplayNode>>)>,
     ) -> Result<()> {
         use crossterm::event::KeyCode;
         match key.code {
@@ -336,7 +393,7 @@ impl App {
                 if self.focused_pane == Pane::Detail {
                     self.detail_tree_state.key_up();
                 } else {
-                    self.selected_left = self.selected_left.saturating_sub(1);
+                    self.select_prev();
                     self.reindex_for_selected();
                 }
             }
@@ -344,18 +401,19 @@ impl App {
                 if self.focused_pane == Pane::Detail {
                     self.detail_tree_state.key_down();
                 } else {
-                    let max = self.sources.len().saturating_sub(1);
-                    self.selected_left = (self.selected_left + 1).min(max);
+                    self.select_next();
                     self.reindex_for_selected();
                 }
             }
             KeyCode::Enter => {
-                let idx = self.selected_left;
-                self.trigger_load(idx, false, load_tx);
+                if let Some(id) = self.selected_left {
+                    self.trigger_load(id, false, load_tx);
+                }
             }
             KeyCode::Char('r') => {
-                let idx = self.selected_left;
-                self.trigger_load(idx, true, load_tx);
+                if let Some(id) = self.selected_left {
+                    self.trigger_load(id, true, load_tx);
+                }
             }
             KeyCode::Tab => {
                 self.focused_pane = match self.focused_pane {
@@ -382,7 +440,7 @@ impl App {
                 // a new comparison is starting with a potentially different pair.
                 self.compare_diff_cache = None;
                 match self.compare_selection {
-                    None => self.compare_selection = Some(self.selected_left),
+                    None => self.compare_selection = self.selected_left,
                     Some(_) => self.state = AppState::Comparing,
                 }
             }
@@ -416,7 +474,10 @@ impl App {
     }
 
     fn expand_all(&mut self) {
-        if let Some(LoadState::Loaded(nodes)) = self.loaded.get(&self.selected_left) {
+        let Some(id) = self.selected_left else {
+            return;
+        };
+        if let Some(LoadState::Loaded(nodes)) = self.loaded.get(&id) {
             // Intentionally uses the raw (unfiltered) node tree so that
             // toggling off a field filter or hide_empty after pressing E
             // reveals a fully-expanded tree rather than a partially-expanded one.
@@ -432,11 +493,11 @@ impl App {
 
     fn trigger_load(
         &mut self,
-        idx: usize,
+        id: SourceId,
         force: bool,
-        load_tx: &tokio::sync::mpsc::UnboundedSender<(usize, Result<Vec<DisplayNode>>)>,
+        load_tx: &tokio::sync::mpsc::UnboundedSender<(SourceId, Result<Vec<DisplayNode>>)>,
     ) {
-        match self.loaded.get(&idx) {
+        match self.loaded.get(&id) {
             Some(LoadState::Loaded(_)) if !force => return,
             Some(LoadState::Loading) => return,
             _ => {}
@@ -444,29 +505,29 @@ impl App {
 
         // Resolve source before mutating state so we never enter Loading
         // without a corresponding background task.
-        let Some(src) = self.sources.get(idx).cloned() else {
+        let Some(src) = self.source_by_id(id).cloned() else {
             return;
         };
-        self.loaded.insert(idx, LoadState::Loading);
+        self.loaded.insert(id, LoadState::Loading);
         self.loading_count += 1;
 
         let client = self.client.clone();
         let tx = load_tx.clone();
         tokio::spawn(async move {
             let result = src.load(&client).await;
-            let _ = tx.send((idx, result));
+            let _ = tx.send((id, result));
         });
     }
 
-    fn handle_load_result(&mut self, idx: usize, result: Result<Vec<DisplayNode>>) {
+    fn handle_load_result(&mut self, id: SourceId, result: Result<Vec<DisplayNode>>) {
         self.loading_count = self.loading_count.saturating_sub(1);
         match result {
             Ok(nodes) => {
-                self.loaded.insert(idx, LoadState::Loaded(nodes));
+                self.loaded.insert(id, LoadState::Loaded(nodes));
                 // Only reset expand/collapse state when the loaded source is
                 // the one currently on display; background loads for other
                 // sources should not collapse the tree the user is browsing.
-                if idx == self.selected_left {
+                if self.selected_left == Some(id) {
                     self.detail_tree_state = TreeState::default();
                     // Re-index so the matcher is ready the moment the user
                     // presses '/' — avoids the index cost on the first keystroke.
@@ -474,12 +535,12 @@ impl App {
                 }
                 // Invalidate the cached diff if the newly loaded source is either
                 // half of the current comparison pair — stale data must not linger.
-                if idx == self.selected_left || Some(idx) == self.compare_selection {
+                if self.selected_left == Some(id) || self.compare_selection == Some(id) {
                     self.compare_diff_cache = None;
                 }
             }
             Err(e) => {
-                self.loaded.remove(&idx);
+                self.loaded.remove(&id);
                 // Pre-format the display text once rather than on every frame.
                 self.state = AppState::Error {
                     message: format!("Error: {e}\n\nPress any key to dismiss."),
@@ -529,12 +590,19 @@ impl App {
     /// for that.  If no manifest is loaded for the selected source the matcher
     /// is cleared so stale results from a previous selection are not shown.
     pub fn reindex_for_selected(&mut self) {
-        match self.loaded.get(&self.selected_left) {
-            Some(LoadState::Loaded(nodes)) => {
+        let loaded_nodes = self
+            .selected_left
+            .and_then(|id| self.loaded.get(&id))
+            .and_then(|s| match s {
+                LoadState::Loaded(nodes) => Some(nodes.as_slice()),
+                _ => None,
+            });
+        match loaded_nodes {
+            Some(nodes) => {
                 let flat = crate::manifest::tree::flatten(nodes);
                 self.matcher.index(&flat);
             }
-            _ => {
+            None => {
                 // No manifest loaded; clear stale index from a previous selection.
                 self.matcher.index(&[]);
             }
@@ -633,8 +701,7 @@ impl App {
         match event.kind {
             MouseEventKind::ScrollDown => match self.focused_pane {
                 Pane::FileList => {
-                    self.selected_left =
-                        (self.selected_left + 1).min(self.sources.len().saturating_sub(1));
+                    self.select_next();
                 }
                 Pane::Detail => {
                     self.detail_tree_state.scroll_down(1);
@@ -642,7 +709,7 @@ impl App {
             },
             MouseEventKind::ScrollUp => match self.focused_pane {
                 Pane::FileList => {
-                    self.selected_left = self.selected_left.saturating_sub(1);
+                    self.select_prev();
                 }
                 Pane::Detail => {
                     self.detail_tree_state.scroll_up(1);
@@ -657,8 +724,8 @@ impl App {
                         self.focused_pane = Pane::FileList;
                         // Subtract the top border row to get the item index.
                         let row = event.row.saturating_sub(layout.list_area.top() + 1) as usize;
-                        if row < self.sources.len() {
-                            self.selected_left = row;
+                        if let Some(id) = self.id_at(row) {
+                            self.selected_left = Some(id);
                         }
                     } else {
                         self.focused_pane = Pane::Detail;
@@ -669,9 +736,96 @@ impl App {
         }
     }
 
-    /// Register a new manifest source.
-    pub fn add_source(&mut self, source: Arc<dyn ManifestSource>) {
-        self.sources.push(source);
+    // -----------------------------------------------------------------------
+    // SourceId helpers
+    // -----------------------------------------------------------------------
+
+    /// Register a new manifest source and return its stable [`SourceId`].
+    ///
+    /// If this is the first source added, `selected_left` is initialised to
+    /// the new id so the file list has a valid cursor.
+    pub fn add_source(&mut self, src: Arc<dyn ManifestSource>) -> SourceId {
+        let id = SourceId::next();
+        self.sources.push((id, src));
+        if self.selected_left.is_none() {
+            self.selected_left = Some(id);
+        }
+        id
+    }
+
+    /// Expand a directory into individual [`FileSource`](crate::manifest::loader::FileSource)
+    /// entries and register each one.
+    ///
+    /// Offloads the blocking `walkdir` traversal to the tokio blocking thread
+    /// pool so that this call never stalls the async runtime.  Returns the
+    /// stable `SourceId`s assigned to each file, in directory-enumeration order.
+    pub async fn add_dir(&mut self, path: std::path::PathBuf) -> Result<Vec<SourceId>> {
+        let entries = crate::manifest::loader::DirSource::new(path)
+            .entries_async()
+            .await?;
+        let mut ids = Vec::with_capacity(entries.len());
+        for file_src in entries {
+            ids.push(self.add_source(Arc::new(file_src)));
+        }
+        Ok(ids)
+    }
+
+    /// Return the `Arc<dyn ManifestSource>` for the given id, if present.
+    ///
+    /// The linear scan is acceptable here — `sources` is bounded by the number
+    /// of files the user selected on the command line (typically O(10)) and
+    /// this path is not in the per-frame draw hot loop.
+    pub fn source_by_id(&self, id: SourceId) -> Option<&Arc<dyn ManifestSource>> {
+        self.sources
+            .iter()
+            .find_map(|(sid, src)| (*sid == id).then_some(src))
+    }
+
+    /// Return the list-position index of the given [`SourceId`] within `sources`.
+    #[inline]
+    pub fn index_of(&self, id: SourceId) -> Option<usize> {
+        self.sources.iter().position(|(sid, _)| *sid == id)
+    }
+
+    /// Return the [`SourceId`] at the given list-position index.
+    #[inline]
+    pub fn id_at(&self, idx: usize) -> Option<SourceId> {
+        self.sources.get(idx).map(|(id, _)| *id)
+    }
+
+    /// Move the file-list cursor by `delta` positions, saturating at both
+    /// ends.  Positive values move down (next), negative values move up
+    /// (previous).  A no-op if `sources` is empty.
+    ///
+    /// Unifies next/prev navigation into a single linear scan — each arrow
+    /// key press touches `sources` exactly once (not twice, as separate
+    /// `index_of`/`id_at` calls would).
+    fn move_selection(&mut self, delta: isize) {
+        let len = self.sources.len();
+        if len == 0 {
+            self.selected_left = None;
+            return;
+        }
+        let current_idx = self
+            .selected_left
+            .and_then(|id| self.index_of(id))
+            .unwrap_or(0);
+        // Saturating arithmetic on isize first, then clamped to the valid
+        // index range [0, len - 1].  `len - 1` is safe because `len > 0`.
+        let next = (current_idx as isize)
+            .saturating_add(delta)
+            .clamp(0, (len - 1) as isize) as usize;
+        self.selected_left = self.id_at(next);
+    }
+
+    #[inline]
+    fn select_next(&mut self) {
+        self.move_selection(1);
+    }
+
+    #[inline]
+    fn select_prev(&mut self) {
+        self.move_selection(-1);
     }
 }
 
@@ -828,12 +982,166 @@ mod tests {
     fn load_state_loading_then_loaded() {
         let config = Config::default();
         let mut app = App::new(config).expect("app init");
-        assert!(!app.loaded.contains_key(&0));
+        let id = SourceId::next();
+        assert!(!app.loaded.contains_key(&id));
 
-        app.loaded.insert(0, LoadState::Loading);
-        assert!(matches!(app.loaded.get(&0), Some(LoadState::Loading)));
+        app.loaded.insert(id, LoadState::Loading);
+        assert!(matches!(app.loaded.get(&id), Some(LoadState::Loading)));
 
-        app.loaded.insert(0, LoadState::Loaded(vec![]));
-        assert!(matches!(app.loaded.get(&0), Some(LoadState::Loaded(_))));
+        app.loaded.insert(id, LoadState::Loaded(vec![]));
+        assert!(matches!(app.loaded.get(&id), Some(LoadState::Loaded(_))));
+    }
+
+    // --- SourceId behaviour ---
+
+    #[test]
+    fn source_id_is_unique_across_allocations() {
+        let a = SourceId::next();
+        let b = SourceId::next();
+        let c = SourceId::next();
+        assert_ne!(a, b);
+        assert_ne!(b, c);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn add_source_returns_unique_ids_and_sets_initial_selection() {
+        use crate::manifest::loader::MockManifestSource;
+        let mut app = App::new(Config::default()).unwrap();
+        assert!(app.selected_left.is_none());
+
+        let id0 = app.add_source(Arc::new({
+            let mut m = MockManifestSource::new();
+            m.expect_label().return_const("a".to_owned());
+            m.expect_is_remote().return_const(false);
+            m
+        }));
+        let id1 = app.add_source(Arc::new({
+            let mut m = MockManifestSource::new();
+            m.expect_label().return_const("b".to_owned());
+            m.expect_is_remote().return_const(false);
+            m
+        }));
+
+        assert_ne!(id0, id1);
+        // First add initialises selection; subsequent adds leave it alone.
+        assert_eq!(app.selected_left, Some(id0));
+        assert_eq!(app.index_of(id0), Some(0));
+        assert_eq!(app.index_of(id1), Some(1));
+        assert_eq!(app.id_at(0), Some(id0));
+        assert_eq!(app.id_at(1), Some(id1));
+    }
+
+    #[test]
+    fn index_of_returns_none_for_unknown_id() {
+        let app = App::new(Config::default()).unwrap();
+        let stray = SourceId::next();
+        assert!(app.index_of(stray).is_none());
+        assert!(app.id_at(0).is_none());
+    }
+
+    #[test]
+    fn select_next_prev_bound_to_sources() {
+        use crate::manifest::loader::MockManifestSource;
+        let mut app = App::new(Config::default()).unwrap();
+        let mk = || {
+            let mut m = MockManifestSource::new();
+            m.expect_label().return_const("x".to_owned());
+            m.expect_is_remote().return_const(false);
+            Arc::new(m) as Arc<dyn ManifestSource>
+        };
+        let id0 = app.add_source(mk());
+        let id1 = app.add_source(mk());
+        let id2 = app.add_source(mk());
+
+        app.selected_left = Some(id0);
+        app.select_next();
+        assert_eq!(app.selected_left, Some(id1));
+        app.select_prev();
+        assert_eq!(app.selected_left, Some(id0));
+        // Prev at head saturates.
+        app.select_prev();
+        assert_eq!(app.selected_left, Some(id0));
+        // Next at tail saturates.
+        app.selected_left = Some(id2);
+        app.select_next();
+        assert_eq!(app.selected_left, Some(id2));
+    }
+
+    #[test]
+    fn move_selection_is_noop_on_empty_sources() {
+        let mut app = App::new(Config::default()).unwrap();
+        // Empty app — selected_left is None, and stays None regardless of delta.
+        app.move_selection(1);
+        assert!(app.selected_left.is_none());
+        app.move_selection(-1);
+        assert!(app.selected_left.is_none());
+        app.move_selection(isize::MAX);
+        assert!(app.selected_left.is_none());
+    }
+
+    #[test]
+    fn move_selection_clamps_large_deltas() {
+        use crate::manifest::loader::MockManifestSource;
+        let mut app = App::new(Config::default()).unwrap();
+        let mk = || {
+            let mut m = MockManifestSource::new();
+            m.expect_label().return_const("x".to_owned());
+            m.expect_is_remote().return_const(false);
+            Arc::new(m) as Arc<dyn ManifestSource>
+        };
+        let first = app.add_source(mk());
+        let _mid = app.add_source(mk());
+        let last = app.add_source(mk());
+
+        app.selected_left = Some(first);
+        app.move_selection(isize::MAX);
+        assert_eq!(app.selected_left, Some(last), "clamp to tail");
+
+        app.move_selection(isize::MIN);
+        assert_eq!(app.selected_left, Some(first), "clamp to head");
+    }
+
+    #[test]
+    fn move_selection_recovers_from_stale_selected_left() {
+        use crate::manifest::loader::MockManifestSource;
+        let mut app = App::new(Config::default()).unwrap();
+        let mut m = MockManifestSource::new();
+        m.expect_label().return_const("x".to_owned());
+        m.expect_is_remote().return_const(false);
+        let id = app.add_source(Arc::new(m));
+
+        // Simulate a stale id (e.g. source was removed in a future feature).
+        app.selected_left = Some(SourceId::next());
+        app.move_selection(1);
+        // Should fall back to position 0, which is the real live source.
+        assert_eq!(app.selected_left, Some(id));
+    }
+
+    // --- SourceId formatting ---
+
+    #[test]
+    fn source_id_display_is_prefixed() {
+        // Allocate a fresh id, then confirm Display/Debug are stable and
+        // carry the `src#` prefix so log output is self-describing.
+        let id = SourceId::next();
+        let disp = format!("{id}");
+        let dbg = format!("{id:?}");
+        assert!(disp.starts_with("src#"), "display missing prefix: {disp}");
+        assert_eq!(disp, dbg, "Debug must match Display");
+    }
+
+    proptest::proptest! {
+        /// Every [`SourceId`] returned by `next()` must be unique within a
+        /// single burst.  The guarantee is provided by the `AtomicU64`
+        /// counter; this test pins the invariant against future refactors
+        /// (e.g. switching to a hash or a reused pool) that could silently
+        /// break it.
+        #[test]
+        fn source_id_next_is_unique(n in 1usize..512) {
+            let ids: std::collections::HashSet<SourceId> =
+                (0..n).map(|_| SourceId::next()).collect();
+            proptest::prop_assert_eq!(ids.len(), n);
+        }
     }
 }

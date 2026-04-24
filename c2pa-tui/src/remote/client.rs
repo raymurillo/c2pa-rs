@@ -40,11 +40,14 @@ impl RemoteClient {
             )));
         }
 
-        // Basic and Digest credentials would be transmitted in cleartext over plain HTTP.
-        // Refuse rather than silently leak credentials.
-        if scheme == "http" && matches!(auth, Auth::Basic { .. } | Auth::Digest { .. }) {
+        // Basic credentials would be transmitted in cleartext over plain HTTP.
+        // Refuse rather than silently leak credentials.  `Digest` is handled
+        // separately by `Auth::apply` below (which returns `Err` for every
+        // scheme because `reqwest` has no native Digest support), so it
+        // never reaches the wire regardless of transport.
+        if scheme == "http" && matches!(auth, Auth::Basic { .. }) {
             return Err(AppError::Auth(
-                "Basic and Digest authentication require HTTPS; refusing to send \
+                "Basic authentication requires HTTPS; refusing to send \
                  credentials over an unencrypted connection"
                     .into(),
             ));
@@ -53,7 +56,7 @@ impl RemoteClient {
         let mut attempts = 0u8;
         loop {
             let builder = self.inner.get(url.as_str());
-            let builder = auth.apply(builder);
+            let builder = auth.apply(builder)?;
             let response = builder.send().await;
             match response {
                 Ok(resp) => {
@@ -153,5 +156,19 @@ mod tests {
         let auth = Auth::from_spec("digest:user:pass").unwrap();
         let err = client.fetch(&url, &auth).await.unwrap_err();
         assert!(matches!(err, AppError::Auth(_)));
+    }
+
+    #[tokio::test]
+    async fn fetch_rejects_digest_auth_over_https() {
+        // Digest is unsupported even over HTTPS — `Auth::apply` now surfaces
+        // the error rather than silently falling back to Basic.  Reaching
+        // this error means `apply`'s `?` fired before any network call was
+        // attempted.
+        let client = RemoteClient::new().unwrap();
+        let url = url::Url::parse("https://example.invalid/asset.jpg").unwrap();
+        let auth = Auth::from_spec("digest:user:pass").unwrap();
+        let err = client.fetch(&url, &auth).await.unwrap_err();
+        assert!(matches!(err, AppError::Auth(_)));
+        assert!(format!("{err}").to_lowercase().contains("digest"));
     }
 }
