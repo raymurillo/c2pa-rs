@@ -8,6 +8,7 @@ use ratatui::layout::Rect;
 
 use c2pa_tui::app::{App, AppState, LoadState};
 use c2pa_tui::config::Config;
+use c2pa_tui::manifest::filter::FieldFilter;
 use c2pa_tui::manifest::loader::FileSource;
 use c2pa_tui::manifest::tree::{DisplayNode, NodeValue};
 use c2pa_tui::ui::layout::{centered_popup, split_horizontal, split_status, CachedLayout};
@@ -247,8 +248,108 @@ fn bench_draw(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
+// Spec-07 hot-path benchmarks
+// ---------------------------------------------------------------------------
+
+fn bench_search(c: &mut Criterion) {
+    // --- draw/search_overlay_active ---
+    // Measures a full draw() call when the search overlay is open:
+    // flatten (detail path) + HashSet lookup + search_bar render.
+    c.bench_function("draw/search_overlay_active", |b| {
+        b.iter_batched(
+            || {
+                let mut app = make_populated_app(1, 1);
+                app.state = AppState::Searching {
+                    query: "jpeg".into(),
+                };
+                app.reindex_for_selected();
+                app.reindex_and_search();
+                (make_terminal(), app)
+            },
+            |(mut terminal, mut app)| {
+                terminal.draw(|f| c2pa_tui::ui::draw(f, &mut app)).unwrap();
+            },
+            BatchSize::SmallInput,
+        )
+    });
+
+    // --- draw/filter_overlay_active ---
+    // Measures a full draw() call when the filter bar is open:
+    // from_query (once) + apply_ref + filter_bar render.
+    c.bench_function("draw/filter_overlay_active", |b| {
+        b.iter_batched(
+            || {
+                let mut app = make_populated_app(1, 1);
+                app.state = AppState::Filtering {
+                    query: "assertions.*".into(),
+                };
+                (make_terminal(), app)
+            },
+            |(mut terminal, mut app)| {
+                terminal.draw(|f| c2pa_tui::ui::draw(f, &mut app)).unwrap();
+            },
+            BatchSize::SmallInput,
+        )
+    });
+
+    // --- search/reindex_for_selected ---
+    // Cost of the flatten + nucleo re-index triggered by a manifest load or
+    // file-list navigation.  This is the formerly-per-keystroke cost.
+    c.bench_function("search/reindex_for_selected", |b| {
+        b.iter_batched(
+            || make_populated_app(1, 1),
+            |mut app| {
+                app.reindex_for_selected();
+            },
+            BatchSize::SmallInput,
+        )
+    });
+
+    // --- search/keystroke ---
+    // Cost of a single character keystroke while the search overlay is open:
+    // matcher.query() + cursor update + HashSet rebuild.
+    // The index is already warm; this should be significantly cheaper than
+    // the old reindex_and_search which called index() every time.
+    c.bench_function("search/keystroke", |b| {
+        b.iter_batched(
+            || {
+                let mut app = make_populated_app(1, 1);
+                app.reindex_for_selected();
+                app.state = AppState::Searching {
+                    query: "jpe".into(),
+                };
+                app.reindex_and_search();
+                app
+            },
+            |mut app| {
+                if let AppState::Searching { query } = &mut app.state {
+                    query.push('g');
+                }
+                app.reindex_and_search();
+            },
+            BatchSize::SmallInput,
+        )
+    });
+
+    // --- filter/apply_ref vs apply_clone ---
+    // Directly compare apply_ref (borrow) against apply(nodes.clone()) to
+    // quantify the allocation savings in the filter bar's preview path.
+    let mut group = c.benchmark_group("filter");
+    let nodes = make_manifest_nodes();
+    let filter = FieldFilter::from_query("assertions.*").unwrap();
+
+    group.bench_function("apply_clone", |b| {
+        b.iter(|| black_box(filter.apply(black_box(nodes.clone()))))
+    });
+    group.bench_function("apply_ref", |b| {
+        b.iter(|| black_box(filter.apply_ref(black_box(&nodes))))
+    });
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
 // Criterion entry-points
 // ---------------------------------------------------------------------------
 
-criterion_group!(benches, bench_layout, bench_draw);
+criterion_group!(benches, bench_layout, bench_draw, bench_search);
 criterion_main!(benches);

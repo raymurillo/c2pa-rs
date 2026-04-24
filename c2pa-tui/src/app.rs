@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use tui_tree_widget::TreeState;
@@ -9,7 +9,7 @@ use crate::manifest::filter::FieldFilter;
 use crate::manifest::loader::ManifestSource;
 use crate::manifest::tree::DisplayNode;
 use crate::remote::client::RemoteClient;
-use crate::search::matcher::Matcher;
+use crate::search::matcher::{MatchResult, Matcher};
 use crate::ui::layout::CachedLayout;
 
 // ---------------------------------------------------------------------------
@@ -120,6 +120,13 @@ pub struct App {
     pub detail_tree_state: TreeState<String>,
     /// Number of sources currently being loaded in background tasks.
     pub loading_count: usize,
+    /// Current search matches for the active query — updated as the user types.
+    pub search_results: Vec<MatchResult>,
+    /// Cursor within search_results (for navigating between matches).
+    pub search_cursor: usize,
+    /// `node_index` values from `search_results`, kept in sync to avoid a
+    /// per-frame `HashSet` allocation in the detail-pane draw path.
+    pub search_result_indices: HashSet<usize>,
 }
 
 impl App {
@@ -141,6 +148,9 @@ impl App {
             layout_cache: None,
             detail_tree_state: TreeState::default(),
             loading_count: 0,
+            search_results: Vec::new(),
+            search_cursor: 0,
+            search_result_indices: HashSet::new(),
         })
     }
 
@@ -277,10 +287,12 @@ impl App {
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
                 self.selected_left = self.selected_left.saturating_sub(1);
+                self.reindex_for_selected();
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 let max = self.sources.len().saturating_sub(1);
                 self.selected_left = (self.selected_left + 1).min(max);
+                self.reindex_for_selected();
             }
             KeyCode::Enter => {
                 let idx = self.selected_left;
@@ -297,6 +309,10 @@ impl App {
                 };
             }
             KeyCode::Char('/') => {
+                // Ensure the index reflects the current selection before the
+                // overlay opens (catches mouse-driven selection changes that
+                // bypass the Up/Down handlers above).
+                self.reindex_for_selected();
                 self.state = AppState::Searching {
                     query: String::new(),
                 };
@@ -362,6 +378,9 @@ impl App {
                 // sources should not collapse the tree the user is browsing.
                 if idx == self.selected_left {
                     self.detail_tree_state = TreeState::default();
+                    // Re-index so the matcher is ready the moment the user
+                    // presses '/' — avoids the index cost on the first keystroke.
+                    self.reindex_for_selected();
                 }
             }
             Err(e) => {
@@ -377,19 +396,85 @@ impl App {
     fn handle_search_key(&mut self, key: crossterm::event::KeyEvent) {
         use crossterm::event::KeyCode;
         match key.code {
-            KeyCode::Esc => self.state = AppState::Browse,
+            KeyCode::Esc => {
+                self.state = AppState::Browse;
+                self.search_results.clear();
+                self.search_result_indices.clear();
+                self.search_cursor = 0;
+            }
             KeyCode::Char(c) => {
                 if let AppState::Searching { query } = &mut self.state {
                     query.push(c);
                 }
+                self.reindex_and_search();
             }
             KeyCode::Backspace => {
                 if let AppState::Searching { query } = &mut self.state {
                     query.pop();
                 }
+                self.reindex_and_search();
+            }
+            KeyCode::Down | KeyCode::Tab if !self.search_results.is_empty() => {
+                self.search_cursor = (self.search_cursor + 1) % self.search_results.len();
+            }
+            KeyCode::Up if !self.search_results.is_empty() => {
+                self.search_cursor = self
+                    .search_cursor
+                    .checked_sub(1)
+                    .unwrap_or(self.search_results.len() - 1);
             }
             _ => {}
         }
+    }
+
+    /// (Re-)index the flat nodes for the currently selected manifest.
+    ///
+    /// Call this whenever `selected_left` changes or a manifest finishes
+    /// loading.  Does **not** re-run the query; call [`Self::reindex_and_search`]
+    /// for that.  If no manifest is loaded for the selected source the matcher
+    /// is cleared so stale results from a previous selection are not shown.
+    pub fn reindex_for_selected(&mut self) {
+        match self.loaded.get(&self.selected_left) {
+            Some(LoadState::Loaded(nodes)) => {
+                let flat = crate::manifest::tree::flatten(nodes);
+                self.matcher.index(&flat);
+            }
+            _ => {
+                // No manifest loaded; clear stale index from a previous selection.
+                self.matcher.index(&[]);
+            }
+        }
+    }
+
+    /// Run the active search query against the already-indexed nodes.
+    ///
+    /// Updates `search_results`, `search_result_indices`, and `search_cursor`.
+    /// Preserves the cursor on the same node when possible so that refining
+    /// a query does not jump the selection back to the top.
+    ///
+    /// Does **not** re-index; call [`Self::reindex_for_selected`] first if
+    /// the node set has changed.
+    pub fn reindex_and_search(&mut self) {
+        let query = match &self.state {
+            AppState::Searching { query } => query.clone(),
+            _ => String::new(),
+        };
+
+        // Remember which node was selected so we can try to keep it visible.
+        let prev_node_index = self
+            .search_results
+            .get(self.search_cursor)
+            .map(|r| r.node_index);
+
+        self.search_results = self.matcher.query(&query);
+
+        // Preserve cursor on the same node; fall back to the top.
+        self.search_cursor = prev_node_index
+            .and_then(|idx| self.search_results.iter().position(|r| r.node_index == idx))
+            .unwrap_or(0);
+
+        // Keep the index set in sync so detail::draw avoids a per-frame alloc.
+        self.search_result_indices = self.search_results.iter().map(|r| r.node_index).collect();
     }
 
     fn handle_filter_key(&mut self, key: crossterm::event::KeyEvent) {

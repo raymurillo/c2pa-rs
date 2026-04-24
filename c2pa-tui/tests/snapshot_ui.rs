@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use c2pa_tui::app::{App, LoadState};
+use c2pa_tui::app::{App, AppState, LoadState};
 use c2pa_tui::config::Config;
 use c2pa_tui::manifest::loader::ManifestSource;
 use c2pa_tui::manifest::tree::{DisplayNode, NodeValue};
@@ -229,4 +229,70 @@ fn detail_pane_shows_source_label_as_title() {
         content.contains("photo.jpg"),
         "detail pane border should show the source label"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Spec-07 helpers and tests
+// ---------------------------------------------------------------------------
+
+fn make_app_with_loaded_manifest() -> App {
+    let mut app = App::new(Config::default()).unwrap();
+    app.add_source(TestSource::new("test.jpg"));
+    let nodes = vec![
+        make_branch(
+            "Claim",
+            vec![
+                make_leaf("format", "image/jpeg"),
+                make_leaf("title", "Test Photo"),
+            ],
+        ),
+        make_branch(
+            "Assertions",
+            vec![make_branch(
+                "c2pa.hash.data",
+                vec![make_leaf("alg", "sha256")],
+            )],
+        ),
+    ];
+    app.loaded.insert(0, LoadState::Loaded(nodes));
+    // Prime the search index so reindex_and_search() only needs to query.
+    app.reindex_for_selected();
+    app
+}
+
+#[test]
+fn search_bar_renders_with_query() {
+    let mut app = make_app_with_loaded_manifest();
+    app.state = AppState::Searching {
+        query: "jpeg".into(),
+    };
+    app.reindex_and_search();
+    let mut terminal = make_test_terminal(100, 30);
+    terminal.draw(|f| c2pa_tui::ui::draw(f, &mut app)).unwrap();
+    let content = buffer_to_string(terminal.backend().buffer());
+    insta::assert_snapshot!(content);
+}
+
+#[test]
+fn filter_bar_renders_preview() {
+    let mut app = make_app_with_loaded_manifest();
+    app.state = AppState::Filtering {
+        query: "Assertions.*".into(),
+    };
+    let mut terminal = make_test_terminal(100, 30);
+    terminal.draw(|f| c2pa_tui::ui::draw(f, &mut app)).unwrap();
+    let content = buffer_to_string(terminal.backend().buffer());
+    insta::assert_snapshot!(content);
+}
+
+#[test]
+fn filter_bar_shows_error_for_invalid_glob() {
+    let mut app = make_app_with_loaded_manifest();
+    app.state = AppState::Filtering {
+        query: "[invalid".into(),
+    };
+    let mut terminal = make_test_terminal(100, 30);
+    terminal.draw(|f| c2pa_tui::ui::draw(f, &mut app)).unwrap();
+    let content = buffer_to_string(terminal.backend().buffer());
+    insta::assert_snapshot!(content);
 }

@@ -75,6 +75,14 @@ impl FieldFilter {
     pub fn apply(&self, nodes: Vec<DisplayNode>) -> Vec<DisplayNode> {
         apply_inner(nodes, "", self)
     }
+
+    /// Borrow-based variant of [`Self::apply`].
+    ///
+    /// Avoids cloning nodes that are pruned by the filter; only surviving nodes
+    /// are allocated. Prefer this over `apply(nodes.clone())` in render paths.
+    pub fn apply_ref(&self, nodes: &[DisplayNode]) -> Vec<DisplayNode> {
+        apply_inner_ref(nodes, "", self)
+    }
 }
 
 fn apply_inner(nodes: Vec<DisplayNode>, prefix: &str, filter: &FieldFilter) -> Vec<DisplayNode> {
@@ -106,6 +114,42 @@ fn apply_inner(nodes: Vec<DisplayNode>, prefix: &str, filter: &FieldFilter) -> V
 
             if kept {
                 Some(node)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Borrow-based recursive filter: clones only nodes that survive the filter.
+fn apply_inner_ref(nodes: &[DisplayNode], prefix: &str, filter: &FieldFilter) -> Vec<DisplayNode> {
+    nodes
+        .iter()
+        .filter_map(|node| {
+            let path = if prefix.is_empty() {
+                node.key.clone()
+            } else {
+                format!("{}.{}", prefix, node.key)
+            };
+            let lpath = path.to_lowercase();
+
+            if filter.exclude_paths.iter().any(|p| p.matches(&lpath)) {
+                return None;
+            }
+
+            let self_included = filter.include_paths.is_empty()
+                || filter.include_paths.iter().any(|p| p.matches(&lpath));
+
+            let children = apply_inner_ref(&node.children, &path, filter);
+
+            let kept = self_included || (!filter.include_paths.is_empty() && !children.is_empty());
+
+            if kept {
+                Some(DisplayNode {
+                    key: node.key.clone(),
+                    value: node.value.clone(),
+                    children,
+                })
             } else {
                 None
             }
@@ -218,6 +262,20 @@ mod tests {
         ) {
             let f = FieldFilter::from_query("**").unwrap();
             prop_assert_eq!(f.apply(nodes.clone()).len(), nodes.len());
+        }
+
+        #[test]
+        fn apply_ref_matches_apply(
+            include in "[a-z.*]+",
+            nodes in proptest::collection::vec(arb_node(), 0..10)
+        ) {
+            let f = FieldFilter::from_query(&include).unwrap_or_default();
+            let via_apply = f.apply(nodes.clone());
+            let via_ref   = f.apply_ref(&nodes);
+            prop_assert_eq!(via_apply.len(), via_ref.len());
+            for (a, b) in via_apply.iter().zip(via_ref.iter()) {
+                prop_assert_eq!(&a.key, &b.key);
+            }
         }
     }
 }

@@ -41,6 +41,14 @@ impl Matcher {
         }
     }
 
+    /// The flat node list that was most recently passed to [`Self::index`].
+    ///
+    /// Draw code uses this to look up display strings for search results without
+    /// calling `flatten` a second time per frame.
+    pub fn items(&self) -> &[FlatNode] {
+        &self.items
+    }
+
     /// Replace the current index with a new set of nodes.
     ///
     /// Clears any previous query state. Subsequent calls to `query` search only
