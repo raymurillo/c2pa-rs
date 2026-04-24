@@ -14,8 +14,12 @@ path = "src/main.rs"
 name = "c2pa_tui"
 path = "src/lib.rs"
 
+[features]
+debug-telemetry = ["dep:dial9-tokio-telemetry"]
+
 [dependencies]
 c2pa          = { path = "../sdk", default-features = false, features = ["file_io", "rust_native_crypto"] }
+dial9-tokio-telemetry = { version = "=0.1.1", optional = true }
 ratatui       = "0.29"
 crossterm     = { version = "0.28", features = ["event-stream"] }
 tokio         = { version = "1", features = ["full"] }
