@@ -44,38 +44,95 @@ c2pa-tui/
 
 ---
 
+## Module map
+
+```mermaid
+graph TD
+    main["main.rs\nCLI · source registration · runtime"]
+    app["app.rs\nApp · AppState · event loop"]
+    config["config.rs\nConfig · Theme"]
+    error["error.rs\nAppError · Result"]
+
+    subgraph manifest
+        loader["loader.rs\nManifestSource\nFileSource · DirSource · RemoteSource"]
+        tree["tree.rs\nDisplayNode · NodeValue\nFlatNode · store_to_nodes · flatten"]
+        filter["filter.rs\nFieldFilter"]
+    end
+
+    subgraph search
+        matcher["matcher.rs\nMatcher · MatchResult\n(nucleo)"]
+    end
+
+    subgraph compare
+        diff["diff.rs\nManifestDiff · FieldDiff · diff()"]
+    end
+
+    subgraph remote
+        auth["auth.rs\nAuth"]
+        client["client.rs\nRemoteClient\n(reqwest)"]
+    end
+
+    subgraph ui
+        ui_mod["mod.rs\ndraw() dispatcher"]
+        layout["layout.rs\nCachedLayout"]
+        file_list["file_list.rs"]
+        detail["detail.rs"]
+        status_bar["status_bar.rs"]
+        search_bar["search_bar.rs"]
+        filter_bar["filter_bar.rs"]
+        compare_ui["compare.rs"]
+    end
+
+    main --> app
+    main --> config
+    main --> loader
+    main --> auth
+    app --> loader
+    app --> tree
+    app --> filter
+    app --> matcher
+    app --> diff
+    app --> client
+    app --> config
+    app --> ui_mod
+    loader --> tree
+    loader --> client
+    loader --> auth
+    ui_mod --> layout
+    ui_mod --> file_list
+    ui_mod --> detail
+    ui_mod --> status_bar
+    ui_mod --> search_bar
+    ui_mod --> filter_bar
+    ui_mod --> compare_ui
+```
+
+---
+
 ## Data flow
 
-```
-CLI args
-  │
-  ▼
-main.rs ──► App::new(Config)
-              │
-              │  registers sources
-              ▼
-         App::sources: Vec<Arc<dyn ManifestSource>>
-              │
-              │  on Enter / 'r'
-              ▼
-         tokio::spawn ──► ManifestSource::load(&client)
-              │                    │
-              │            c2pa::Reader::with_file()  ← c2pa SDK
-              │                    │
-              │            store_to_nodes(reader)
-              │                    │
-              │            Vec<DisplayNode>  (hierarchical tree)
-              │
-              │  via mpsc channel
-              ▼
-         App::loaded: HashMap<usize, LoadState>
-              │
-              │  on each frame
-              ▼
-         filter.apply_ref(nodes)       ← FieldFilter prunes by glob path
-              │
-              ▼
-         ui::detail::draw()            ← renders tui-tree-widget
+```mermaid
+flowchart TD
+    CLI["CLI args\n(paths / URLs / flags)"]
+    Config["Config"]
+    Sources["App::sources\nVec&lt;Arc&lt;dyn ManifestSource&gt;&gt;"]
+    Spawn["tokio::spawn\n(background task)"]
+    SDK["c2pa::Reader::with_file()"]
+    Nodes["store_to_nodes()\nVec&lt;DisplayNode&gt;"]
+    Channel["mpsc channel\n(usize, Result&lt;Vec&lt;DisplayNode&gt;&gt;)"]
+    Loaded["App::loaded\nHashMap&lt;usize, LoadState&gt;"]
+    Filter["FieldFilter::apply_ref()\nprune by glob path"]
+    Render["ui::detail::draw()\ntui-tree-widget"]
+
+    CLI --> Config
+    CLI --> Sources
+    Sources -->|"Enter / r"| Spawn
+    Spawn --> SDK
+    SDK --> Nodes
+    Nodes --> Channel
+    Channel --> Loaded
+    Loaded -->|"each frame"| Filter
+    Filter --> Render
 ```
 
 ---
@@ -84,28 +141,28 @@ main.rs ──► App::new(Config)
 
 `AppState` is the central discriminant that controls which key handlers and which UI overlays are active.
 
-```
-                ┌─────────────────────────────────────────────────────┐
-                │                     Browse                          │
-                │  ↑/↓/j/k  navigate  │  Enter  load  │  r  reload   │
-                │  Tab  switch pane    │  Space  expand tree          │
-                └──┬──────┬──────┬────────┬─────────────────────┬─────┘
-                   │      │      │        │                     │
-                   /      f      c        ?                    Esc
-                   │      │      │        │                     │
-               Searching Filtering      show_help=true   compare_selection=None
-                   │      │      │
-                   │      │   Comparing
-                   │      │      │ a — toggle show_all_diffs
-                   │      │      │ Esc — back to Browse
-                   │      │
-                   │  Enter → validate → Browse (or Error)
-                   │  Esc  → Browse
-                   │
-               Esc → Browse
-               typing → reindex_and_search()
+```mermaid
+stateDiagram-v2
+    [*] --> Browse
 
-               Any state + any key → Error clears back to Browse
+    Browse --> Searching   : /
+    Browse --> Filtering   : f
+    Browse --> Comparing   : c (second press)
+    Browse --> Browse      : c (first press, sets compare_selection)
+    Browse --> Browse      : Esc (clears compare_selection)
+
+    Searching --> Browse   : Esc
+    Searching --> Searching: typing / Backspace\n(reindex_and_search)
+    Searching --> Searching: ↑ / ↓ / Tab\n(navigate results)
+
+    Filtering --> Browse   : Esc
+    Filtering --> Browse   : Enter (valid glob)
+    Filtering --> Error    : Enter (invalid glob)
+
+    Comparing --> Browse   : Esc
+    Comparing --> Comparing: a (toggle show_all_diffs)
+
+    Error --> Browse       : any key
 ```
 
 `StateKind` is a cheap copy of the discriminant used for dispatch — avoids cloning the heap-allocated `String` inside `Searching { query }` or `Filtering { query }` on every key event.
@@ -145,6 +202,35 @@ pub struct DisplayNode {
 ```
 
 `store_to_nodes` converts a `c2pa::Reader` into this tree. Each manifest becomes one root node with five fixed children: **Claim**, **Claim Signature**, **Assertions**, **Ingredients**, **Validation**.
+
+```mermaid
+graph TD
+    M["Manifest: urn:uuid:… (active)"]
+    M --> Claim
+    M --> Sig["Claim Signature"]
+    M --> Assertions["Assertions (N)"]
+    M --> Ingredients["Ingredients (N)"]
+    M --> Validation
+
+    Claim --> title["title: …"]
+    Claim --> format["format: …"]
+    Claim --> iid["instance_id: …"]
+    Claim --> cg["claim_generator: …"]
+
+    Sig --> issuer["issuer: …"]
+    Sig --> time["time: …"]
+    Sig --> alg["alg: …"]
+
+    Assertions --> A1["c2pa.actions"]
+    A1 --> a1a["[0].action: …"]
+    Assertions --> A2["stds.schema-org.ClaimReview\n(Bytes)"]
+
+    Ingredients --> I1["photo.jpg"]
+    I1 --> i1f["format: …"]
+    I1 --> i1r["relationship: …"]
+
+    Validation --> vstatus["status: valid"]
+```
 
 `flatten` DFS-walks the tree into `Vec<FlatNode>` (dot-joined paths) for the search engine.
 
@@ -192,18 +278,38 @@ Left DFS order is preserved; right-only fields are appended. The result is cache
 
 Every iteration of the event loop calls `ui::draw(frame, app)`:
 
-```
-ui::draw()
-  ├── CachedLayout::compute(area)   ← skipped if area unchanged
-  ├── file_list::draw()             ← left pane
-  ├── detail::draw()                ← right pane (filtered tree, search highlights)
-  ├── status_bar::draw()            ← bottom line
-  └── overlay (at most one):
-       ├── search_bar::draw()       ← AppState::Searching
-       ├── filter_bar::draw()       ← AppState::Filtering
-       ├── compare::draw()          ← AppState::Comparing
-       └── draw_error_overlay()     ← AppState::Error
-  └── draw_help_overlay()           ← if app.show_help (independent of state)
+```mermaid
+flowchart TD
+    Draw["ui::draw(frame, app)"]
+    Layout["CachedLayout::compute(area)\nskipped if area unchanged"]
+    FileList["file_list::draw()\nleft pane"]
+    Detail["detail::draw()\nright pane\n(filtered tree · search highlights)"]
+    StatusBar["status_bar::draw()\nbottom line"]
+    OverlayCheck{AppState?}
+    SearchBar["search_bar::draw()"]
+    FilterBar["filter_bar::draw()"]
+    Compare["compare::draw()"]
+    ErrorOverlay["draw_error_overlay()"]
+    HelpCheck{show_help?}
+    HelpOverlay["draw_help_overlay()"]
+
+    Draw --> Layout
+    Layout --> FileList
+    Layout --> Detail
+    Layout --> StatusBar
+    StatusBar --> OverlayCheck
+    OverlayCheck -->|Searching| SearchBar
+    OverlayCheck -->|Filtering| FilterBar
+    OverlayCheck -->|Comparing| Compare
+    OverlayCheck -->|Error| ErrorOverlay
+    OverlayCheck -->|Browse| HelpCheck
+    SearchBar --> HelpCheck
+    FilterBar --> HelpCheck
+    Compare --> HelpCheck
+    ErrorOverlay --> HelpCheck
+    HelpCheck -->|true| HelpOverlay
+    HelpCheck -->|false| Done["frame complete"]
+    HelpOverlay --> Done
 ```
 
 `CachedLayout` stores four `Rect`s computed once per terminal size. It is also used for mouse hit-testing so click coordinates are always consistent with what was rendered.
@@ -212,21 +318,31 @@ ui::draw()
 
 ## Async loading
 
-```
-handle_browse_key(Enter)
-  └── trigger_load(idx)
-        └── tokio::spawn(async {
-              let nodes = src.load(&client).await;
-              tx.send((idx, nodes));
-            })
+```mermaid
+sequenceDiagram
+    participant User
+    participant App
+    participant Tokio as tokio::spawn
+    participant Src as ManifestSource
+    participant SDK as c2pa::Reader
+    participant Chan as mpsc channel
 
-event_loop tokio::select!
-  ├── event_stream.next()  → handle_event()
-  └── load_rx.recv()       → handle_load_result()
-        ├── inserts LoadState::Loaded into App::loaded
-        ├── resets detail_tree_state if idx == selected_left
-        ├── re-indexes matcher for immediate search readiness
-        └── invalidates compare_diff_cache if either compared source
+    User->>App: Enter (or r)
+    App->>App: loaded[idx] = Loading\nloading_count += 1
+    App->>Tokio: spawn(async move)
+    Tokio->>Src: load(&client).await
+    Src->>SDK: Reader::with_file()
+    SDK-->>Src: Reader
+    Src->>Src: store_to_nodes(reader)
+    Src-->>Tokio: Ok(Vec<DisplayNode>)
+    Tokio->>Chan: tx.send((idx, Ok(nodes)))
+
+    loop event_loop: tokio::select!
+        Chan-->>App: load_rx.recv() → (idx, result)
+        App->>App: loading_count -= 1\nloaded[idx] = Loaded(nodes)
+        App->>App: reset detail_tree_state\nreindex matcher
+        App->>App: invalidate compare_diff_cache\n(if idx is either compared source)
+    end
 ```
 
 The channel is unbounded so `tokio::spawn` never blocks. `loading_count` tracks in-flight tasks for the status bar spinner.
