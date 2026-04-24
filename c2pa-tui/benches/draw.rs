@@ -245,6 +245,22 @@ fn bench_draw(c: &mut Criterion) {
             BatchSize::SmallInput,
         )
     });
+
+    // Detail pane with hide_empty active — measures filter_empty_nodes + tree render.
+    // This filter runs every frame when enabled, so its cost must be tracked.
+    c.bench_function("draw/detail_hide_empty", |b| {
+        b.iter_batched(
+            || {
+                let mut app = make_populated_app(1, 1);
+                app.hide_empty = true;
+                (make_terminal(), app)
+            },
+            |(mut terminal, mut app)| {
+                terminal.draw(|f| c2pa_tui::ui::draw(f, &mut app)).unwrap();
+            },
+            BatchSize::SmallInput,
+        )
+    });
 }
 
 // ---------------------------------------------------------------------------

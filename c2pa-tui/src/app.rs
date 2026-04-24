@@ -125,6 +125,8 @@ pub struct App {
     pub layout_cache: Option<(ratatui::layout::Rect, CachedLayout)>,
     /// Expand/collapse and scroll state for the detail tree.
     pub detail_tree_state: TreeState<String>,
+    /// When `true` leaf nodes with empty/zero values are hidden from the detail tree.
+    pub hide_empty: bool,
     /// Number of sources currently being loaded in background tasks.
     pub loading_count: usize,
     /// Current search matches for the active query — updated as the user types.
@@ -134,6 +136,41 @@ pub struct App {
     /// `node_index` values from `search_results`, kept in sync to avoid a
     /// per-frame `HashSet` allocation in the detail-pane draw path.
     pub search_result_indices: HashSet<usize>,
+}
+
+/// Walk `nodes` and collect the `Vec<String>` identifier paths for every
+/// interior node (those with children), matching the dot-joined scheme used by
+/// `node_to_tree_item` in the detail pane.
+///
+/// `depth` guards against stack overflow on pathological inputs; recursion
+/// stops beyond 256 levels (consistent with `prune_to_matches` in detail.rs).
+fn collect_all_interior_ids(
+    nodes: &[DisplayNode],
+    dot_prefix: &str,
+    ancestor_path: &[String],
+    depth: usize,
+    out: &mut Vec<Vec<String>>,
+) {
+    if depth > 256 {
+        return;
+    }
+    for node in nodes {
+        if node.children.is_empty() {
+            continue;
+        }
+        let id = if dot_prefix.is_empty() {
+            node.key.clone()
+        } else {
+            format!("{}.{}", dot_prefix, node.key)
+        };
+        let mut path = ancestor_path.to_vec();
+        path.push(id.clone());
+        // Recurse before moving `path` into `out` so that the borrow of `path`
+        // as `ancestor_path` is released first.  Push order (post-order here)
+        // is irrelevant because `TreeState::open` inserts into a HashSet.
+        collect_all_interior_ids(&node.children, &id, &path, depth + 1, out);
+        out.push(path); // move — avoids one Vec clone per interior node
+    }
 }
 
 impl App {
@@ -156,6 +193,7 @@ impl App {
             compare_diff_cache: None,
             layout_cache: None,
             detail_tree_state: TreeState::default(),
+            hide_empty: false,
             loading_count: 0,
             search_results: Vec::new(),
             search_cursor: 0,
@@ -295,13 +333,21 @@ impl App {
         use crossterm::event::KeyCode;
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
-                self.selected_left = self.selected_left.saturating_sub(1);
-                self.reindex_for_selected();
+                if self.focused_pane == Pane::Detail {
+                    self.detail_tree_state.key_up();
+                } else {
+                    self.selected_left = self.selected_left.saturating_sub(1);
+                    self.reindex_for_selected();
+                }
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                let max = self.sources.len().saturating_sub(1);
-                self.selected_left = (self.selected_left + 1).min(max);
-                self.reindex_for_selected();
+                if self.focused_pane == Pane::Detail {
+                    self.detail_tree_state.key_down();
+                } else {
+                    let max = self.sources.len().saturating_sub(1);
+                    self.selected_left = (self.selected_left + 1).min(max);
+                    self.reindex_for_selected();
+                }
             }
             KeyCode::Enter => {
                 let idx = self.selected_left;
@@ -349,9 +395,39 @@ impl App {
             KeyCode::Char(' ') if self.focused_pane == Pane::Detail => {
                 self.detail_tree_state.toggle_selected();
             }
+            KeyCode::Char('h') if self.focused_pane == Pane::Detail => {
+                self.detail_tree_state.key_left();
+            }
+            KeyCode::Char('l') if self.focused_pane == Pane::Detail => {
+                self.detail_tree_state.key_right();
+            }
+            KeyCode::Char('E') if self.focused_pane == Pane::Detail => {
+                self.expand_all();
+            }
+            KeyCode::Char('W') if self.focused_pane == Pane::Detail => {
+                self.detail_tree_state.close_all();
+            }
+            KeyCode::Char('e') if self.focused_pane == Pane::Detail => {
+                self.hide_empty = !self.hide_empty;
+            }
             _ => {}
         }
         Ok(())
+    }
+
+    fn expand_all(&mut self) {
+        if let Some(LoadState::Loaded(nodes)) = self.loaded.get(&self.selected_left) {
+            // Intentionally uses the raw (unfiltered) node tree so that
+            // toggling off a field filter or hide_empty after pressing E
+            // reveals a fully-expanded tree rather than a partially-expanded one.
+            // Phantom IDs (for currently-filtered nodes) are silently ignored
+            // by tui-tree-widget's TreeState.
+            let mut ids = Vec::new();
+            collect_all_interior_ids(nodes, "", &[], 0, &mut ids);
+            for id in ids {
+                self.detail_tree_state.open(id);
+            }
+        }
     }
 
     fn trigger_load(
@@ -672,6 +748,80 @@ mod tests {
             .kind(),
             StateKind::Error
         );
+    }
+
+    // --- collect_all_interior_ids ---
+
+    fn leaf_dn(key: &str) -> DisplayNode {
+        DisplayNode {
+            key: key.to_owned(),
+            value: crate::manifest::tree::NodeValue::Str("v".into()),
+            children: vec![],
+        }
+    }
+
+    fn branch_dn(key: &str, children: Vec<DisplayNode>) -> DisplayNode {
+        DisplayNode {
+            key: key.to_owned(),
+            value: crate::manifest::tree::NodeValue::Missing,
+            children,
+        }
+    }
+
+    fn collect(nodes: &[DisplayNode]) -> Vec<Vec<String>> {
+        let mut out = Vec::new();
+        collect_all_interior_ids(nodes, "", &[], 0, &mut out);
+        out
+    }
+
+    #[test]
+    fn collect_ids_empty_input() {
+        assert!(collect(&[]).is_empty());
+    }
+
+    #[test]
+    fn collect_ids_only_leaves() {
+        let nodes = vec![leaf_dn("a"), leaf_dn("b")];
+        assert!(collect(&nodes).is_empty());
+    }
+
+    #[test]
+    fn collect_ids_single_root_interior() {
+        let nodes = vec![branch_dn("Root", vec![leaf_dn("child")])];
+        let ids = collect(&nodes);
+        assert_eq!(ids.len(), 1);
+        assert_eq!(ids[0], vec!["Root"]);
+    }
+
+    #[test]
+    fn collect_ids_nested_paths_match_node_to_tree_item_scheme() {
+        // The dot-joined path used here must match the `id` computed inside
+        // `node_to_tree_item` in detail.rs — that's the contract.
+        let nodes = vec![branch_dn(
+            "Manifest",
+            vec![branch_dn("Claim", vec![leaf_dn("title")])],
+        )];
+        let ids = collect(&nodes);
+        // Both "Manifest" and "Manifest.Claim" are interior nodes.
+        assert_eq!(ids.len(), 2);
+        let id_set: std::collections::HashSet<Vec<String>> = ids.into_iter().collect();
+        assert!(id_set.contains(&vec!["Manifest".to_owned()]));
+        assert!(id_set.contains(&vec!["Manifest".to_owned(), "Manifest.Claim".to_owned()]));
+    }
+
+    #[test]
+    fn collect_ids_depth_guard_stops_at_256() {
+        fn deep(depth: usize) -> DisplayNode {
+            if depth == 0 {
+                leaf_dn("leaf")
+            } else {
+                branch_dn("n", vec![deep(depth - 1)])
+            }
+        }
+        let nodes = vec![deep(300)];
+        let ids = collect(&nodes);
+        // Must not overflow; depth guard caps at 256 levels.
+        assert!(ids.len() <= 257, "should not recurse beyond depth 256");
     }
 
     #[test]

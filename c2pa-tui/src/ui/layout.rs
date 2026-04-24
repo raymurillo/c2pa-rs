@@ -68,3 +68,31 @@ pub fn centered_popup(area: Rect, width_pct: u16, height_pct: u16) -> Rect {
         .split(horizontal[1]);
     vertical[1]
 }
+
+/// Centered floating rect sized to an exact number of content lines.
+///
+/// Unlike [`centered_popup`], which uses a height percentage that can clip
+/// content on short terminals, this variant uses `Constraint::Length` so the
+/// popup is exactly `height_lines + 2` rows tall (content + top/bottom border)
+/// and is clamped to `area.height`.  The vertical margins absorb the
+/// remainder, keeping the popup centered.
+pub fn centered_popup_exact(area: Rect, width_pct: u16, height_lines: u16) -> Rect {
+    // +2 for the top and bottom border rows drawn by the widget's Block.
+    let total_height = (height_lines + 2).min(area.height);
+    let horizontal = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - width_pct) / 2),
+            Constraint::Percentage(width_pct),
+            Constraint::Percentage((100 - width_pct) / 2),
+        ])
+        .split(area);
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(total_height),
+            Constraint::Min(0),
+        ])
+        .split(horizontal[1])[1]
+}

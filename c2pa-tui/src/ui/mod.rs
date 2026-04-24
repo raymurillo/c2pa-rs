@@ -16,7 +16,7 @@ pub mod status_bar;
 use ratatui::Frame;
 
 use crate::app::{App, AppState};
-use crate::ui::layout::{centered_popup, CachedLayout};
+use crate::ui::layout::{centered_popup, centered_popup_exact, CachedLayout};
 
 /// Render the full TUI layout for one frame.
 pub fn draw(frame: &mut Frame, app: &mut App) {
@@ -57,18 +57,26 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 const HELP_LINES: &[&str] = &[
     "Key bindings",
     "",
+    "--- file list (default focus) ---",
     "↑/↓ or j/k    Navigate file list",
     "Enter          Load selected file",
     "r              Reload (force re-fetch)",
     "Tab            Switch focus (list ↔ detail)",
-    "Space          Expand/collapse tree node",
     "/              Open search bar",
     "f              Open filter bar",
-    "c              Mark for compare (press twice on different files)",
+    "c              Mark for compare (press twice)",
     "Esc            Cancel / close overlay",
     "a              (Compare) toggle equal rows",
     "?              Toggle this help",
     "q / Ctrl+C     Quit",
+    "",
+    "--- detail pane (Tab to focus) ---",
+    "↑/↓ or j/k    Move selection in tree",
+    "h / l          Collapse / expand node",
+    "Space          Toggle expand/collapse",
+    "E              Expand all nodes",
+    "W              Collapse all nodes",
+    "e              Toggle hide empty fields",
 ];
 
 /// Render the help overlay with key bindings.
@@ -76,7 +84,9 @@ fn draw_help_overlay(frame: &mut Frame, area: ratatui::layout::Rect) {
     use ratatui::text::Line;
     use ratatui::widgets::{Block, Borders, Paragraph};
 
-    let popup = centered_popup(area, 60, 70);
+    // Size the popup to the exact content height so no bindings are clipped,
+    // regardless of terminal size.  centered_popup_exact clamps to area.height.
+    let popup = centered_popup_exact(area, 60, HELP_LINES.len() as u16);
     let lines: Vec<Line> = HELP_LINES.iter().map(|s| Line::from(*s)).collect();
     frame.render_widget(
         Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title("Help")),

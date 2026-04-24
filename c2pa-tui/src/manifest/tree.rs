@@ -291,6 +291,43 @@ fn json_to_node(key: &str, value: &Value) -> DisplayNode {
     }
 }
 
+/// Recursively remove nodes that carry no meaningful value.
+///
+/// A leaf is removed when its value is an empty string or zero-length byte
+/// blob.  An interior node is removed when all of its children are removed
+/// after filtering.  Nodes beyond 256 levels deep are preserved unchanged to
+/// guard against stack overflow on pathological inputs (mirrors the limit used
+/// by `prune_to_matches` in the detail pane).
+pub fn filter_empty_nodes(nodes: Vec<DisplayNode>) -> Vec<DisplayNode> {
+    filter_empty_inner(nodes, 0)
+}
+
+fn filter_empty_inner(nodes: Vec<DisplayNode>, depth: usize) -> Vec<DisplayNode> {
+    if depth > 256 {
+        // Preserve nodes at the depth limit rather than silently hiding them.
+        return nodes;
+    }
+    nodes
+        .into_iter()
+        .filter_map(|mut node| {
+            if node.children.is_empty() {
+                match &node.value {
+                    NodeValue::Str(s) if s.is_empty() => None,
+                    NodeValue::Bytes(0) => None,
+                    _ => Some(node),
+                }
+            } else {
+                node.children = filter_empty_inner(node.children, depth + 1);
+                if node.children.is_empty() {
+                    None
+                } else {
+                    Some(node)
+                }
+            }
+        })
+        .collect()
+}
+
 /// Flatten a `DisplayNode` tree to a `Vec<FlatNode>` for search indexing.
 pub fn flatten(nodes: &[DisplayNode]) -> Vec<FlatNode> {
     let mut out = Vec::new();
@@ -502,6 +539,115 @@ mod tests {
         assert!(
             nodes.is_empty(),
             "empty reader should produce no manifest nodes"
+        );
+    }
+
+    // --- filter_empty_nodes ---
+
+    #[test]
+    fn filter_empty_empty_slice() {
+        assert!(filter_empty_nodes(vec![]).is_empty());
+    }
+
+    #[test]
+    fn filter_empty_leaf_empty_str_removed() {
+        let nodes = vec![leaf_node("note", NodeValue::Str(String::new()))];
+        assert!(filter_empty_nodes(nodes).is_empty());
+    }
+
+    #[test]
+    fn filter_empty_leaf_zero_bytes_removed() {
+        let nodes = vec![leaf_node("data", NodeValue::Bytes(0))];
+        assert!(filter_empty_nodes(nodes).is_empty());
+    }
+
+    #[test]
+    fn filter_empty_leaf_nonempty_str_kept() {
+        let nodes = vec![leaf_node("title", NodeValue::Str("photo".into()))];
+        let result = filter_empty_nodes(nodes);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].key, "title");
+    }
+
+    #[test]
+    fn filter_empty_leaf_nonempty_bytes_kept() {
+        let nodes = vec![leaf_node("blob", NodeValue::Bytes(42))];
+        let result = filter_empty_nodes(nodes);
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn filter_empty_json_null_kept() {
+        // JSON null is deliberately kept: `filter_empty_nodes` only strips
+        // Str("") and Bytes(0); null values are meaningful absence markers.
+        let nodes = vec![leaf_node("field", NodeValue::Json(serde_json::Value::Null))];
+        let result = filter_empty_nodes(nodes);
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn filter_empty_interior_all_children_empty_prunes_parent() {
+        let nodes = vec![branch(
+            "Section",
+            vec![
+                leaf_node("a", NodeValue::Str(String::new())),
+                leaf_node("b", NodeValue::Bytes(0)),
+            ],
+        )];
+        assert!(
+            filter_empty_nodes(nodes).is_empty(),
+            "interior whose children all filter out should itself be pruned"
+        );
+    }
+
+    #[test]
+    fn filter_empty_interior_mixed_children_keeps_nonempty() {
+        let nodes = vec![branch(
+            "Claim",
+            vec![
+                leaf_node("title", NodeValue::Str("photo".into())),
+                leaf_node("description", NodeValue::Str(String::new())),
+                leaf_node("format", NodeValue::Str("image/jpeg".into())),
+            ],
+        )];
+        let result = filter_empty_nodes(nodes);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].children.len(), 2);
+        let keys: Vec<&str> = result[0].children.iter().map(|n| n.key.as_str()).collect();
+        assert!(keys.contains(&"title"));
+        assert!(keys.contains(&"format"));
+        assert!(!keys.contains(&"description"));
+    }
+
+    #[test]
+    fn filter_empty_interior_no_empty_children_kept_intact() {
+        let nodes = vec![branch(
+            "Claim",
+            vec![
+                leaf_node("title", NodeValue::Str("photo".into())),
+                leaf_node("format", NodeValue::Str("image/jpeg".into())),
+            ],
+        )];
+        let result = filter_empty_nodes(nodes);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].children.len(), 2);
+    }
+
+    #[test]
+    fn filter_empty_depth_guard_preserves_nodes_beyond_256() {
+        // Build a chain 260 nodes deep; nodes at depth > 256 must not be lost.
+        fn deep(depth: usize) -> DisplayNode {
+            if depth == 0 {
+                leaf_node("leaf", NodeValue::Str("value".into()))
+            } else {
+                branch(&format!("n{depth}"), vec![deep(depth - 1)])
+            }
+        }
+        let nodes = vec![deep(260)];
+        let result = filter_empty_nodes(nodes);
+        assert!(
+            !result.is_empty(),
+            "nodes beyond depth 256 should be preserved, not pruned"
         );
     }
 }
