@@ -114,6 +114,8 @@ pub struct App {
     pub focused_pane: Pane,
     /// Whether the help overlay is visible.
     pub show_help: bool,
+    /// When in compare mode, whether equal rows are also shown (not just diffs).
+    pub show_all_diffs: bool,
     /// Cached layout rects, invalidated on terminal resize.
     pub layout_cache: Option<(ratatui::layout::Rect, CachedLayout)>,
     /// Expand/collapse and scroll state for the detail tree.
@@ -145,6 +147,7 @@ impl App {
             client,
             focused_pane: Pane::FileList,
             show_help: false,
+            show_all_diffs: false,
             layout_cache: None,
             detail_tree_state: TreeState::default(),
             loading_count: 0,
@@ -519,9 +522,15 @@ impl App {
 
     fn handle_compare_key(&mut self, key: crossterm::event::KeyEvent) {
         use crossterm::event::KeyCode;
-        if key.code == KeyCode::Esc {
-            self.compare_selection = None;
-            self.state = AppState::Browse;
+        match key.code {
+            KeyCode::Esc => {
+                self.compare_selection = None;
+                self.state = AppState::Browse;
+            }
+            KeyCode::Char('a') => {
+                self.show_all_diffs = !self.show_all_diffs;
+            }
+            _ => {}
         }
     }
 

@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use c2pa_tui::app::{App, AppState, LoadState};
-use c2pa_tui::config::Config;
+use c2pa_tui::config::{Config, Theme};
 use c2pa_tui::manifest::loader::ManifestSource;
 use c2pa_tui::manifest::tree::{DisplayNode, NodeValue};
 use c2pa_tui::remote::RemoteClient;
@@ -294,5 +294,149 @@ fn filter_bar_shows_error_for_invalid_glob() {
     let mut terminal = make_test_terminal(100, 30);
     terminal.draw(|f| c2pa_tui::ui::draw(f, &mut app)).unwrap();
     let content = buffer_to_string(terminal.backend().buffer());
+    insta::assert_snapshot!(content);
+}
+
+// ---------------------------------------------------------------------------
+// Spec-09 snapshot tests
+// ---------------------------------------------------------------------------
+
+fn make_compare_app() -> App {
+    let mut app = make_app_with_loaded_manifest();
+
+    // Add a second source with slightly different content.
+    app.add_source(TestSource::new("other.jpg"));
+    let nodes_right = vec![
+        make_branch(
+            "Claim",
+            vec![
+                make_leaf("format", "image/png"),
+                make_leaf("title", "Other Photo"),
+            ],
+        ),
+        make_branch(
+            "Assertions",
+            vec![make_branch(
+                "c2pa.hash.data",
+                vec![make_leaf("alg", "sha512")],
+            )],
+        ),
+    ];
+    app.loaded.insert(1, LoadState::Loaded(nodes_right));
+    app.compare_selection = Some(1);
+    app.state = AppState::Comparing;
+    app
+}
+
+#[test]
+fn compare_view_shows_differences() {
+    let mut app = make_compare_app();
+    app.show_all_diffs = false;
+    let mut terminal = make_test_terminal(120, 30);
+    terminal.draw(|f| c2pa_tui::ui::draw(f, &mut app)).unwrap();
+    let content = buffer_to_string(terminal.backend().buffer());
+    insta::assert_snapshot!(content);
+}
+
+#[test]
+fn compare_view_show_all_includes_equal_rows() {
+    let mut app = make_compare_app();
+    app.show_all_diffs = true;
+    let mut terminal = make_test_terminal(120, 30);
+    terminal.draw(|f| c2pa_tui::ui::draw(f, &mut app)).unwrap();
+    let content = buffer_to_string(terminal.backend().buffer());
+    insta::assert_snapshot!(content);
+}
+
+#[test]
+fn compare_view_no_diff_loaded_shows_placeholder() {
+    let mut app = App::new(Config::default()).unwrap();
+    app.add_source(TestSource::new("a.jpg"));
+    app.add_source(TestSource::new("b.jpg"));
+    // Neither source has been loaded — compare_selection set without loaded data.
+    app.compare_selection = Some(1);
+    app.state = AppState::Comparing;
+
+    let mut terminal = make_test_terminal(100, 24);
+    terminal.draw(|f| c2pa_tui::ui::draw(f, &mut app)).unwrap();
+    let content = buffer_to_string(terminal.backend().buffer());
+    assert!(
+        content.contains("not loaded") || content.contains("Select") || content.contains("load"),
+        "should show placeholder when no manifests loaded"
+    );
+    insta::assert_snapshot!(content);
+}
+
+#[test]
+fn error_overlay_is_rendered_centered() {
+    let mut app = App::new(Config::default()).unwrap();
+    app.state = AppState::Error {
+        message: "Something went wrong\n\nPress any key to dismiss.".into(),
+    };
+
+    let mut terminal = make_test_terminal(100, 24);
+    terminal.draw(|f| c2pa_tui::ui::draw(f, &mut app)).unwrap();
+    let content = buffer_to_string(terminal.backend().buffer());
+    assert!(
+        content.contains("Error"),
+        "should render Error border title"
+    );
+    assert!(
+        content.contains("Something went wrong"),
+        "should render error message"
+    );
+    insta::assert_snapshot!(content);
+}
+
+#[test]
+fn help_overlay_shows_key_bindings() {
+    let mut app = App::new(Config::default()).unwrap();
+    app.show_help = true;
+
+    let mut terminal = make_test_terminal(100, 30);
+    terminal.draw(|f| c2pa_tui::ui::draw(f, &mut app)).unwrap();
+    let content = buffer_to_string(terminal.backend().buffer());
+    assert!(content.contains("Help"), "should show Help title");
+    assert!(
+        content.contains("Key bindings"),
+        "should show key bindings header"
+    );
+    assert!(content.contains("q / Ctrl+C"), "should show quit binding");
+    insta::assert_snapshot!(content);
+}
+
+#[test]
+fn light_theme_renders_loaded_manifest() {
+    let config = Config {
+        theme: Theme::Light,
+        ..Config::default()
+    };
+    let mut app = App::new(config).unwrap();
+    app.add_source(TestSource::new("photo.jpg"));
+    let nodes = vec![make_branch("Claim", vec![make_leaf("title", "My Photo")])];
+    app.loaded.insert(0, LoadState::Loaded(nodes));
+
+    let mut terminal = make_test_terminal(80, 24);
+    terminal.draw(|f| c2pa_tui::ui::draw(f, &mut app)).unwrap();
+    let content = buffer_to_string(terminal.backend().buffer());
+    assert!(content.contains("photo.jpg"), "should show filename");
+    insta::assert_snapshot!(content);
+}
+
+#[test]
+fn mono_theme_renders_loaded_manifest() {
+    let config = Config {
+        theme: Theme::Mono,
+        ..Config::default()
+    };
+    let mut app = App::new(config).unwrap();
+    app.add_source(TestSource::new("photo.jpg"));
+    let nodes = vec![make_branch("Claim", vec![make_leaf("title", "My Photo")])];
+    app.loaded.insert(0, LoadState::Loaded(nodes));
+
+    let mut terminal = make_test_terminal(80, 24);
+    terminal.draw(|f| c2pa_tui::ui::draw(f, &mut app)).unwrap();
+    let content = buffer_to_string(terminal.backend().buffer());
+    assert!(content.contains("photo.jpg"), "should show filename");
     insta::assert_snapshot!(content);
 }

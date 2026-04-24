@@ -1,0 +1,34 @@
+---
+source: c2pa-tui/tests/snapshot_ui.rs
+expression: content
+---
+┌Files──────────────────┐┌Detail───────────────────────────────────────────────────────────────────┐
+│                       ││                                                                         │
+│                       ││                                                                         │
+│                       ││                                                                         │
+│                       ││                                                                         │
+│                   ┌Help──────────────────────────────────────────────────────┐                   │
+│                   │Key bindings                                              │                   │
+│                   │   ││                                                     │                   │
+│                   │↑/↓ or j/k    Navigate file list                          │                   │
+│                   │Enter          Load selected file                         │                   │
+│                   │r              Reload (force re-fetch)                    │                   │
+│                   │Tab            Switch focus (list ↔ detail)               │                   │
+│                   │Space          Expand/collapse tree node                  │                   │
+│                   │/              Open search bar                            │                   │
+│                   │f              Open filter bar                            │                   │
+│                   │c              Mark for compare (press twice on different │                   │
+│                   │Esc            Cancel / close overlay                     │                   │
+│                   │a              (Compare) toggle equal rows                │                   │
+│                   │?              Toggle this help                           │                   │
+│                   │q / Ctrl+C     Quit                                       │                   │
+│                   │   ││                                                     │                   │
+│                   │   ││                                                     │                   │
+│                   │   ││                                                     │                   │
+│                   │   ││                                                     │                   │
+│                   │   ││                                                     │                   │
+│                   └──────────────────────────────────────────────────────────┘                   │
+│                       ││                                                                         │
+│                       ││                                                                         │
+└───────────────────────┘└─────────────────────────────────────────────────────────────────────────┘
+↑/↓:nav  Enter:load  Tab:focus  /:search  f:filter  c:compare  r:reload  ?:help  q:quit

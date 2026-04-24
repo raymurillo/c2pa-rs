@@ -1,0 +1,34 @@
+---
+source: c2pa-tui/tests/snapshot_ui.rs
+expression: content
+---
+┌Files───────────────────────┐Field.jpg──────────────────test.jpg────────────────────────other.jpg─────────────────────┐
+│[✓] test.jpg                │┌Compare — 3 differences  [a] show equal─────────────────────────────────────────────────┐
+│[✓] other.jpg               ││Claim.format               format: image/jpeg             format: image/png             │
+│                            ││Claim.title                title: Test Photo              title: Other Photo            │
+│                            ││Assertions.c2pa.hash.data. alg: sha256                    alg: sha512                   │
+│                            ││                                                                                        │
+│                            ││                                                                                        │
+│                            ││                                                                                        │
+│                            ││                                                                                        │
+│                            ││                                                                                        │
+│                            ││                                                                                        │
+│                            ││                                                                                        │
+│                            ││                                                                                        │
+│                            ││                                                                                        │
+│                            ││                                                                                        │
+│                            ││                                                                                        │
+│                            ││                                                                                        │
+│                            ││                                                                                        │
+│                            ││                                                                                        │
+│                            ││                                                                                        │
+│                            ││                                                                                        │
+│                            ││                                                                                        │
+│                            ││                                                                                        │
+│                            ││                                                                                        │
+│                            ││                                                                                        │
+│                            ││                                                                                        │
+│                            ││                                                                                        │
+│                            ││                                                                                        │
+└────────────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────┘
+Comparing  Esc:exit compare

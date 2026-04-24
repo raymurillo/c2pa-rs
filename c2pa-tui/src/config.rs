@@ -36,6 +36,74 @@ pub enum Theme {
     Mono,
 }
 
+impl Theme {
+    /// Style for a focused pane border.
+    pub fn border_focused(&self) -> ratatui::style::Style {
+        use ratatui::style::{Color, Modifier, Style};
+        match self {
+            Theme::Dark => Style::default().fg(Color::Yellow),
+            Theme::Light => Style::default().fg(Color::Blue),
+            Theme::Mono => Style::default().add_modifier(Modifier::BOLD),
+        }
+    }
+
+    /// Style for an unfocused pane border.
+    pub fn border_normal(&self) -> ratatui::style::Style {
+        ratatui::style::Style::default()
+    }
+
+    /// Style for the selected/highlighted list row.
+    pub fn highlight(&self) -> ratatui::style::Style {
+        use ratatui::style::{Color, Modifier, Style};
+        match self {
+            Theme::Dark => Style::default().bg(Color::DarkGray),
+            Theme::Light => Style::default().bg(Color::Gray),
+            Theme::Mono => Style::default().add_modifier(Modifier::REVERSED),
+        }
+    }
+
+    /// Style for search match highlights.
+    pub fn match_highlight(&self) -> ratatui::style::Style {
+        use ratatui::style::{Color, Modifier, Style};
+        match self {
+            Theme::Dark => Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+            Theme::Light => Style::default()
+                .fg(Color::Blue)
+                .add_modifier(Modifier::BOLD),
+            Theme::Mono => Style::default().add_modifier(Modifier::UNDERLINED),
+        }
+    }
+
+    /// Style for a field that changed between left and right manifests.
+    pub fn diff_changed(&self) -> ratatui::style::Style {
+        use ratatui::style::{Color, Modifier, Style};
+        match self {
+            Theme::Mono => Style::default().add_modifier(Modifier::BOLD),
+            _ => Style::default().fg(Color::Yellow),
+        }
+    }
+
+    /// Style for a field present only in the left manifest.
+    pub fn diff_only_left(&self) -> ratatui::style::Style {
+        use ratatui::style::{Color, Modifier, Style};
+        match self {
+            Theme::Mono => Style::default().add_modifier(Modifier::DIM),
+            _ => Style::default().fg(Color::Red),
+        }
+    }
+
+    /// Style for a field present only in the right manifest.
+    pub fn diff_only_right(&self) -> ratatui::style::Style {
+        use ratatui::style::{Color, Modifier, Style};
+        match self {
+            Theme::Mono => Style::default().add_modifier(Modifier::ITALIC),
+            _ => Style::default().fg(Color::Green),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

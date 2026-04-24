@@ -44,6 +44,39 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         AppState::Error { message } => draw_error_overlay(frame, area, message),
         AppState::Browse => {}
     }
+
+    if app.show_help {
+        draw_help_overlay(frame, area);
+    }
+}
+
+/// Render the help overlay with key bindings.
+fn draw_help_overlay(frame: &mut Frame, area: ratatui::layout::Rect) {
+    use ratatui::widgets::{Block, Borders, Paragraph};
+
+    let popup = centered_popup(area, 60, 70);
+    let text = [
+        "Key bindings",
+        "",
+        "↑/↓ or j/k    Navigate file list",
+        "Enter          Load selected file",
+        "r              Reload (force re-fetch)",
+        "Tab            Switch focus (list ↔ detail)",
+        "Space          Expand/collapse tree node",
+        "/              Open search bar",
+        "f              Open filter bar",
+        "c              Mark for compare (press twice on different files)",
+        "Esc            Cancel / close overlay",
+        "a              (Compare) toggle equal rows",
+        "?              Toggle this help",
+        "q / Ctrl+C     Quit",
+    ]
+    .join("\n");
+
+    frame.render_widget(
+        Paragraph::new(text).block(Block::default().borders(Borders::ALL).title("Help")),
+        popup,
+    );
 }
 
 /// Render a modal error overlay.  `message` is already formatted for display.
