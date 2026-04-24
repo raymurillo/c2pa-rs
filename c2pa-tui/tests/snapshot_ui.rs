@@ -361,8 +361,8 @@ fn compare_view_no_diff_loaded_shows_placeholder() {
     terminal.draw(|f| c2pa_tui::ui::draw(f, &mut app)).unwrap();
     let content = buffer_to_string(terminal.backend().buffer());
     assert!(
-        content.contains("not loaded") || content.contains("Select") || content.contains("load"),
-        "should show placeholder when no manifests loaded"
+        content.contains("Left manifest not loaded"),
+        "should show the 'Left manifest not loaded' placeholder"
     );
     insta::assert_snapshot!(content);
 }

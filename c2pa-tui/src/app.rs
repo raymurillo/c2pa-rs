@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use tui_tree_widget::TreeState;
 
+use crate::compare::diff::ManifestDiff;
 use crate::config::Config;
 use crate::error::{AppError, Result};
 use crate::manifest::filter::FieldFilter;
@@ -116,6 +117,10 @@ pub struct App {
     pub show_help: bool,
     /// When in compare mode, whether equal rows are also shown (not just diffs).
     pub show_all_diffs: bool,
+    /// Cached diff result for the current comparison pair.
+    /// `None` means the cache is cold and must be (re)computed on the next draw.
+    /// Invalidated whenever either compared source reloads or the pair changes.
+    pub compare_diff_cache: Option<ManifestDiff>,
     /// Cached layout rects, invalidated on terminal resize.
     pub layout_cache: Option<(ratatui::layout::Rect, CachedLayout)>,
     /// Expand/collapse and scroll state for the detail tree.
@@ -148,6 +153,7 @@ impl App {
             focused_pane: Pane::FileList,
             show_help: false,
             show_all_diffs: false,
+            compare_diff_cache: None,
             layout_cache: None,
             detail_tree_state: TreeState::default(),
             loading_count: 0,
@@ -325,10 +331,15 @@ impl App {
                     query: String::new(),
                 };
             }
-            KeyCode::Char('c') => match self.compare_selection {
-                None => self.compare_selection = Some(self.selected_left),
-                Some(_) => self.state = AppState::Comparing,
-            },
+            KeyCode::Char('c') => {
+                // Always bust the cache: either a new left bookmark is being set or
+                // a new comparison is starting with a potentially different pair.
+                self.compare_diff_cache = None;
+                match self.compare_selection {
+                    None => self.compare_selection = Some(self.selected_left),
+                    Some(_) => self.state = AppState::Comparing,
+                }
+            }
             KeyCode::Esc => {
                 self.compare_selection = None;
             }
@@ -384,6 +395,11 @@ impl App {
                     // Re-index so the matcher is ready the moment the user
                     // presses '/' — avoids the index cost on the first keystroke.
                     self.reindex_for_selected();
+                }
+                // Invalidate the cached diff if the newly loaded source is either
+                // half of the current comparison pair — stale data must not linger.
+                if idx == self.selected_left || Some(idx) == self.compare_selection {
+                    self.compare_diff_cache = None;
                 }
             }
             Err(e) => {
@@ -525,6 +541,7 @@ impl App {
         match key.code {
             KeyCode::Esc => {
                 self.compare_selection = None;
+                self.compare_diff_cache = None;
                 self.state = AppState::Browse;
             }
             KeyCode::Char('a') => {

@@ -348,8 +348,130 @@ fn bench_search(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
+// Spec-09 compare-view benchmarks
+// ---------------------------------------------------------------------------
+//
+// Three scenarios isolate different parts of the compare rendering path:
+//
+//   compare_warm  — cache is hot; measures pure Table widget render (~60 fps steady state)
+//   compare_cold  — cache busted every iteration; measures flatten+diff+render
+//   compare_show_all — like warm, but equal rows are visible (larger Table)
+
+fn make_compare_nodes(n: usize, mutate_even: bool) -> Vec<DisplayNode> {
+    let children: Vec<DisplayNode> = (0..n)
+        .map(|i| DisplayNode {
+            key: format!("field_{i}"),
+            value: NodeValue::Str(if mutate_even && i % 2 == 0 {
+                format!("changed_{i}")
+            } else {
+                format!("value_{i}")
+            }),
+            children: vec![],
+        })
+        .collect();
+    vec![DisplayNode {
+        key: "Claim".into(),
+        value: NodeValue::Missing,
+        children,
+    }]
+}
+
+fn make_compare_app_n(n: usize) -> App {
+    let mut app = make_populated_app(2, 0);
+    app.loaded
+        .insert(0, LoadState::Loaded(make_compare_nodes(n, false)));
+    app.loaded
+        .insert(1, LoadState::Loaded(make_compare_nodes(n, true)));
+    app.compare_selection = Some(1);
+    app.state = AppState::Comparing;
+    app
+}
+
+fn bench_draw_compare(c: &mut Criterion) {
+    let sizes = [10usize, 50, 200];
+
+    // Warm cache — steady-state per-frame cost (pure rendering).
+    let mut group = c.benchmark_group("draw/compare_warm");
+    for n in sizes {
+        group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, &n| {
+            b.iter_batched(
+                || {
+                    let mut terminal = make_terminal();
+                    let mut app = make_compare_app_n(n);
+                    // Prime the cache.
+                    terminal.draw(|f| c2pa_tui::ui::draw(f, &mut app)).unwrap();
+                    (terminal, app)
+                },
+                |(mut terminal, mut app)| {
+                    terminal
+                        .draw(|f| c2pa_tui::ui::draw(f, black_box(&mut app)))
+                        .unwrap();
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+    group.finish();
+
+    // Cold cache — cost of entering compare mode (flatten + diff allocation + render).
+    let mut group = c.benchmark_group("draw/compare_cold");
+    for n in sizes {
+        group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, &n| {
+            b.iter_batched(
+                || {
+                    let mut app = make_compare_app_n(n);
+                    // Pre-warm and then bust so the first iteration measures cold.
+                    let mut terminal = make_terminal();
+                    terminal.draw(|f| c2pa_tui::ui::draw(f, &mut app)).unwrap();
+                    app.compare_diff_cache = None;
+                    (terminal, app)
+                },
+                |(mut terminal, mut app)| {
+                    // Reset the cache each iteration to always hit the cold path.
+                    app.compare_diff_cache = None;
+                    terminal
+                        .draw(|f| c2pa_tui::ui::draw(f, black_box(&mut app)))
+                        .unwrap();
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+    group.finish();
+
+    // Warm cache, show_all=true — all rows (equal + diff) rendered; larger Table.
+    let mut group = c.benchmark_group("draw/compare_show_all_warm");
+    for n in sizes {
+        group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, &n| {
+            b.iter_batched(
+                || {
+                    let mut terminal = make_terminal();
+                    let mut app = make_compare_app_n(n);
+                    app.show_all_diffs = true;
+                    terminal.draw(|f| c2pa_tui::ui::draw(f, &mut app)).unwrap();
+                    (terminal, app)
+                },
+                |(mut terminal, mut app)| {
+                    terminal
+                        .draw(|f| c2pa_tui::ui::draw(f, black_box(&mut app)))
+                        .unwrap();
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
 // Criterion entry-points
 // ---------------------------------------------------------------------------
 
-criterion_group!(benches, bench_layout, bench_draw, bench_search);
+criterion_group!(
+    benches,
+    bench_layout,
+    bench_draw,
+    bench_search,
+    bench_draw_compare
+);
 criterion_main!(benches);

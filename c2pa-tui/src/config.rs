@@ -47,8 +47,8 @@ impl Theme {
         }
     }
 
-    /// Style for an unfocused pane border.
-    pub fn border_normal(&self) -> ratatui::style::Style {
+    /// Style for an unfocused pane border (theme-independent).
+    pub fn border_normal() -> ratatui::style::Style {
         ratatui::style::Style::default()
     }
 
