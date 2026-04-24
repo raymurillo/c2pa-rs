@@ -397,11 +397,54 @@ fn help_overlay_shows_key_bindings() {
     terminal.draw(|f| c2pa_tui::ui::draw(f, &mut app)).unwrap();
     let content = buffer_to_string(terminal.backend().buffer());
     assert!(content.contains("Help"), "should show Help title");
-    assert!(
-        content.contains("Key bindings"),
-        "should show key bindings header"
-    );
+    assert!(content.contains("Key bindings"), "should show header");
     assert!(content.contains("q / Ctrl+C"), "should show quit binding");
+    // Detail-pane bindings must all be visible — previously clipped by fixed 70% height.
+    assert!(content.contains("Expand all"), "E binding must be visible");
+    assert!(content.contains("Collapse all"), "W binding must be visible");
+    assert!(content.contains("hide empty"), "e binding must be visible");
+    insta::assert_snapshot!(content);
+}
+
+#[test]
+fn detail_pane_hide_empty_removes_blank_fields() {
+    let mut app = App::new(Config::default()).unwrap();
+    app.add_source(TestSource::new("test.jpg"));
+    let nodes = vec![make_branch(
+        "Claim",
+        vec![
+            make_leaf("title", "Test Photo"),
+            // Empty string — should be hidden when hide_empty is active.
+            make_leaf("description", ""),
+            make_leaf("format", "image/jpeg"),
+            // Zero-byte blob — also hidden.
+            DisplayNode {
+                key: "thumbnail".to_owned(),
+                value: NodeValue::Bytes(0),
+                children: vec![],
+            },
+        ],
+    )];
+    app.loaded.insert(0, LoadState::Loaded(nodes));
+    app.focused_pane = c2pa_tui::app::Pane::Detail;
+    app.hide_empty = true;
+    // Expand the Claim node so its leaf children are visible in the render.
+    app.detail_tree_state.open(vec!["Claim".to_owned()]);
+
+    let mut terminal = make_test_terminal(100, 30);
+    terminal.draw(|f| c2pa_tui::ui::draw(f, &mut app)).unwrap();
+    let content = buffer_to_string(terminal.backend().buffer());
+
+    assert!(content.contains("title"), "non-empty leaf must remain visible");
+    assert!(content.contains("format"), "non-empty leaf must remain visible");
+    assert!(
+        !content.contains("description"),
+        "empty-string leaf must be hidden"
+    );
+    assert!(
+        !content.contains("thumbnail"),
+        "zero-byte leaf must be hidden"
+    );
     insta::assert_snapshot!(content);
 }
 

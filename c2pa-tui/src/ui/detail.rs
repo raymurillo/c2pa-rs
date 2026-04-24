@@ -10,7 +10,7 @@ use tui_tree_widget::{Tree, TreeItem};
 
 use crate::app::{App, AppState, LoadState, Pane};
 use crate::manifest::filter::FieldFilter;
-use crate::manifest::tree::{flatten, DisplayNode, NodeValue};
+use crate::manifest::tree::{filter_empty_nodes, flatten, DisplayNode, NodeValue};
 
 /// Convert a `DisplayNode` to a `TreeItem`, using a dot-joined path as the
 /// identifier so that expand/collapse state survives tree rebuilds.
@@ -128,25 +128,38 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         _ => None,
     };
 
+    // Two optional filter passes are chained here.  Each pass may or may not
+    // allocate; uninitialised `MaybeUninit`-style pattern (declare binding
+    // before the branch, initialise inside) keeps the borrow checker happy
+    // without heap-allocating when neither filter is active.
     let filter_buf;
-    let nodes: &[DisplayNode] = match raw_nodes {
-        None => &[],
-        Some(raw) => {
-            if has_filter || is_searching {
-                filter_buf = apply_filter_and_search(
-                    &app.filter,
-                    is_searching,
-                    &app.search_result_indices,
-                    raw,
-                );
-                &filter_buf
-            } else {
-                raw
+    let empty_buf;
+    let visible_nodes: &[DisplayNode] = {
+        let after_field_filter: &[DisplayNode] = match raw_nodes {
+            None => &[],
+            Some(raw) => {
+                if has_filter || is_searching {
+                    filter_buf = apply_filter_and_search(
+                        &app.filter,
+                        is_searching,
+                        &app.search_result_indices,
+                        raw,
+                    );
+                    &filter_buf
+                } else {
+                    raw
+                }
             }
+        };
+        if app.hide_empty {
+            empty_buf = filter_empty_nodes(after_field_filter.to_vec());
+            &empty_buf
+        } else {
+            after_field_filter
         }
     };
 
-    let items: Vec<_> = nodes
+    let items: Vec<_> = visible_nodes
         .iter()
         .map(|node| node_to_tree_item(node, ""))
         .collect();

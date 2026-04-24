@@ -5,30 +5,30 @@ expression: content
 ┌Files──────────────────┐┌Detail───────────────────────────────────────────────────────────────────┐
 │                       ││                                                                         │
 │                       ││                                                                         │
-│                       ││                                                                         │
-│                       ││                                                                         │
 │                   ┌Help──────────────────────────────────────────────────────┐                   │
 │                   │Key bindings                                              │                   │
 │                   │   ││                                                     │                   │
+│                   │--- file list (default focus) ---                         │                   │
 │                   │↑/↓ or j/k    Navigate file list                          │                   │
 │                   │Enter          Load selected file                         │                   │
 │                   │r              Reload (force re-fetch)                    │                   │
 │                   │Tab            Switch focus (list ↔ detail)               │                   │
-│                   │Space          Expand/collapse tree node                  │                   │
 │                   │/              Open search bar                            │                   │
 │                   │f              Open filter bar                            │                   │
-│                   │c              Mark for compare (press twice on different │                   │
+│                   │c              Mark for compare (press twice)             │                   │
 │                   │Esc            Cancel / close overlay                     │                   │
 │                   │a              (Compare) toggle equal rows                │                   │
 │                   │?              Toggle this help                           │                   │
 │                   │q / Ctrl+C     Quit                                       │                   │
 │                   │   ││                                                     │                   │
-│                   │   ││                                                     │                   │
-│                   │   ││                                                     │                   │
-│                   │   ││                                                     │                   │
-│                   │   ││                                                     │                   │
+│                   │--- detail pane (Tab to focus) ---                        │                   │
+│                   │↑/↓ or j/k    Move selection in tree                      │                   │
+│                   │h / l          Collapse / expand node                     │                   │
+│                   │Space          Toggle expand/collapse                     │                   │
+│                   │E              Expand all nodes                           │                   │
+│                   │W              Collapse all nodes                         │                   │
+│                   │e              Toggle hide empty fields                   │                   │
 │                   └──────────────────────────────────────────────────────────┘                   │
-│                       ││                                                                         │
 │                       ││                                                                         │
 └───────────────────────┘└─────────────────────────────────────────────────────────────────────────┘
 ↑/↓:nav  Enter:load  Tab:focus  /:search  f:filter  c:compare  r:reload  ?:help  q:quit
