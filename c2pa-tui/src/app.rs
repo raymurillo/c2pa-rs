@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use tui_tree_widget::TreeState;
+
 use crate::config::Config;
 use crate::error::{AppError, Result};
 use crate::manifest::filter::FieldFilter;
@@ -114,6 +116,10 @@ pub struct App {
     pub show_help: bool,
     /// Cached layout rects, invalidated on terminal resize.
     pub layout_cache: Option<(ratatui::layout::Rect, CachedLayout)>,
+    /// Expand/collapse and scroll state for the detail tree.
+    pub detail_tree_state: TreeState<String>,
+    /// Number of sources currently being loaded in background tasks.
+    pub loading_count: usize,
 }
 
 impl App {
@@ -133,6 +139,8 @@ impl App {
             focused_pane: Pane::FileList,
             show_help: false,
             layout_cache: None,
+            detail_tree_state: TreeState::default(),
+            loading_count: 0,
         })
     }
 
@@ -252,7 +260,6 @@ impl App {
                 self.handle_mouse(mouse);
             }
             Event::Resize(_, _) => {
-                // Invalidate layout cache so the next draw recomputes rects.
                 self.layout_cache = None;
             }
             _ => {}
@@ -309,6 +316,9 @@ impl App {
             KeyCode::Char('?') => {
                 self.show_help = !self.show_help;
             }
+            KeyCode::Char(' ') if self.focused_pane == Pane::Detail => {
+                self.detail_tree_state.toggle_selected();
+            }
             _ => {}
         }
         Ok(())
@@ -326,13 +336,14 @@ impl App {
             _ => {}
         }
 
-        self.loaded.insert(idx, LoadState::Loading);
-
-        // Arc clone is cheap; moves the source into the spawned task without
-        // requiring ManifestSource: Clone.
+        // Resolve source before mutating state so we never enter Loading
+        // without a corresponding background task.
         let Some(src) = self.sources.get(idx).cloned() else {
             return;
         };
+        self.loaded.insert(idx, LoadState::Loading);
+        self.loading_count += 1;
+
         let client = self.client.clone();
         let tx = load_tx.clone();
         tokio::spawn(async move {
@@ -342,9 +353,16 @@ impl App {
     }
 
     fn handle_load_result(&mut self, idx: usize, result: Result<Vec<DisplayNode>>) {
+        self.loading_count = self.loading_count.saturating_sub(1);
         match result {
             Ok(nodes) => {
                 self.loaded.insert(idx, LoadState::Loaded(nodes));
+                // Only reset expand/collapse state when the loaded source is
+                // the one currently on display; background loads for other
+                // sources should not collapse the tree the user is browsing.
+                if idx == self.selected_left {
+                    self.detail_tree_state = TreeState::default();
+                }
             }
             Err(e) => {
                 self.loaded.remove(&idx);
@@ -422,8 +440,46 @@ impl App {
         }
     }
 
-    fn handle_mouse(&mut self, _event: crossterm::event::MouseEvent) {
-        // Delegated to spec-06 (panes)
+    fn handle_mouse(&mut self, event: crossterm::event::MouseEvent) {
+        use crossterm::event::{MouseButton, MouseEventKind};
+
+        match event.kind {
+            MouseEventKind::ScrollDown => match self.focused_pane {
+                Pane::FileList => {
+                    self.selected_left =
+                        (self.selected_left + 1).min(self.sources.len().saturating_sub(1));
+                }
+                Pane::Detail => {
+                    self.detail_tree_state.scroll_down(1);
+                }
+            },
+            MouseEventKind::ScrollUp => match self.focused_pane {
+                Pane::FileList => {
+                    self.selected_left = self.selected_left.saturating_sub(1);
+                }
+                Pane::Detail => {
+                    self.detail_tree_state.scroll_up(1);
+                }
+            },
+            MouseEventKind::Down(MouseButton::Left) => {
+                // Use the cached layout rects for hit-testing: always consistent
+                // with what was last rendered, and avoids a separate ioctl/syscall
+                // to query the terminal size.
+                if let Some((_, ref layout)) = self.layout_cache {
+                    if event.column < layout.list_area.right() {
+                        self.focused_pane = Pane::FileList;
+                        // Subtract the top border row to get the item index.
+                        let row = event.row.saturating_sub(layout.list_area.top() + 1) as usize;
+                        if row < self.sources.len() {
+                            self.selected_left = row;
+                        }
+                    } else {
+                        self.focused_pane = Pane::Detail;
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Register a new manifest source.

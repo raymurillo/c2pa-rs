@@ -24,7 +24,7 @@ clap          = { version = "4", features = ["derive"] }
 thiserror     = "2"
 serde_json    = "1"
 nucleo        = "0.5"
-tui-tree-widget = "0.22"
+tui-tree-widget = "0.23"
 async-trait   = "0.1"
 walkdir       = "2"
 url           = "2"
