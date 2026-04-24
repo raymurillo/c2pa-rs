@@ -7,15 +7,26 @@ are merged and `cargo build` is clean.
 ## Dependency phases
 
 ```
-Phase 0 ──► Phase 1 ──────────────────────► Phase 2 ──────────────────► Phase 3
+Phase 0 ──► Phase 1 ──────────────────────► Phase 2 ──────────────────► Phase 3 ──► Phase 4 (strictly sequential)
              (all concurrent)                (all concurrent)
 
-spec-00      spec-01  Manifest data layer    spec-06  Panes & status      spec-09  Integration,
-Foundation   spec-02  Remote HTTP layer      spec-07  Search & filter              CLI polish,
-             spec-03  Search engine          spec-08  Compare view                 full tests
-             spec-04  Compare engine
-             spec-05  TUI skeleton
+spec-00      spec-01  Manifest data layer    spec-06  Panes & status      spec-09      spec-10  Security hardening
+Foundation   spec-02  Remote HTTP layer      spec-07  Search & filter     Integration  spec-11  Architecture corrections
+             spec-03  Search engine          spec-08  Compare view        CLI polish,       │   (absorbs A4; adds
+             spec-04  Compare engine                                       full tests        │    SourceId, add_dir,
+             spec-05  TUI skeleton                                                           │    with_loaded_for_tests)
+                                                                                        spec-12  Test coverage gaps
+                                                                                        spec-13  Polish & idioms
 ```
+
+**Phase 4 must run strictly in order: 10 → 11 → 12 → 13.** The specs have
+these cross-spec dependencies:
+
+| Spec | Requires from earlier spec |
+|------|---------------------------|
+| spec-11 | spec-10's `Auth::apply` signature (must update `fetch` atomically) |
+| spec-12 | spec-11's `entries_async()`, `App::with_loaded_for_tests`, and `SourceId` types |
+| spec-13 | spec-12's migration of snapshot tests to `with_loaded_for_tests` (D2 would otherwise break external tests) |
 
 ## Spec summary
 
@@ -31,6 +42,10 @@ Foundation   spec-02  Remote HTTP layer      spec-07  Search & filter           
 | [spec-07](spec-07-overlays.md) | 2 | Search bar overlay + filter bar overlay + highlight rendering | `ui/search_bar.rs`, `ui/filter_bar.rs`, `app.rs` |
 | [spec-08](spec-08-compare-ui.md) | 2 | Side-by-side compare table, diff cache, colour coding | `ui/compare.rs`, `app.rs` |
 | [spec-09](spec-09-integration.md) | 3 | Full clap CLI, `--theme` colour switching, help overlay, all integration + snapshot tests | `main.rs`, `config.rs`, `tests/` |
+| [spec-10](spec-10-security-hardening.md) | 4 | Redacted `Auth` Debug; secure `Default`; env/file credential indirection; `is_timeout()` retry | `remote/auth.rs`, `remote/client.rs` |
+| [spec-11](spec-11-architecture-corrections.md) | 4 | `SourceId` stable key; `App::add_dir`; `entries_async`; `Auth::apply → Result` (A4); `with_loaded_for_tests` | `app.rs`, `manifest/loader.rs`, `main.rs`, `remote/auth.rs`, `remote/client.rs` |
+| [spec-12](spec-12-test-coverage.md) | 4 | State-machine tests; async DirSource tests; HTTP status mapping tests; snapshot suite | `app.rs`, `remote/client.rs`, `manifest/loader.rs`, `tests/snapshot_ui.rs` |
+| [spec-13](spec-13-polish.md) | 4 | `FromStr` for `Auth`; `pub(crate)` field visibility with accessor audit; `Default` rustdoc | `remote/auth.rs`, `main.rs`, `app.rs`, `remote/client.rs`, `tests/snapshot_ui.rs` |
 
 ## Quality requirements (apply to every spec)
 

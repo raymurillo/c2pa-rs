@@ -130,8 +130,12 @@ pub trait ManifestSource: Send + Sync {
     /// Human-readable label shown in the file list pane.
     fn label(&self) -> &str;
 
-    /// Load and return the manifest store for this source.
-    async fn load(&self, client: &RemoteClient) -> Result<c2pa::ManifestStore>;
+    /// Load and parse the manifest, returning a `DisplayNode` tree.
+    ///
+    /// Note: returns `Vec<DisplayNode>` directly, not `c2pa::ManifestStore`.
+    /// The conversion from `c2pa::Reader` to `DisplayNode` is done inside
+    /// each impl via `store_to_nodes()`.
+    async fn load(&self, client: &RemoteClient) -> Result<Vec<DisplayNode>>;
 
     /// Whether this source can be refreshed (remote sources → true).
     fn is_remote(&self) -> bool { false }
@@ -140,7 +144,9 @@ pub trait ManifestSource: Send + Sync {
 
 Implementations:
 - `FileSource(PathBuf)` — single local file
-- `DirSource(PathBuf)` — yields one `FileSource` per supported file found via `walkdir`
+- `DirSource(PathBuf)` — utility for directory enumeration via `entries()` /
+  `entries_async()`; **not** a `ManifestSource` itself — `App::add_dir()` expands
+  it into individual `FileSource` entries (see spec-11)
 - `RemoteSource { url: Url, auth: Auth }` — fetches asset bytes over HTTP
 
 #### `DisplayNode` — `manifest/tree.rs`
@@ -161,7 +167,9 @@ pub enum NodeValue {
 }
 ```
 
-`ManifestStore → Vec<DisplayNode>` conversion flattens the C2PA structure into:
+`store_to_nodes(reader: &c2pa::Reader) -> Vec<DisplayNode>` converts a parsed
+`c2pa::Reader` (not `ManifestStore`) into a display tree.  The conversion
+flattens the C2PA structure into:
 - **Claim** (label, instance id, format, title)
 - **Claim signature** (issuer, time, alg)
 - **Assertions** (each assertion as an expandable subtree)
