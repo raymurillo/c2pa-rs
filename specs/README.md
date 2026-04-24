@@ -28,6 +28,20 @@ Foundation   spec-02  Remote HTTP layer      spec-07  Search & filter     Integr
                                                                               Phase 6 (parallel after Phase 5)
                                                                               spec-15  Async-safe Matcher
                                                                               spec-17  Data model cleanup
+                                                                                             │
+                                                                                             ▼
+                                                                              Phase 7 (sequential after Phase 6)
+                                                                              spec-19  Observability core
+                                                                              spec-20  Error reporter & log overlay
+                                                                                             │
+                                                                                             ▼
+                                                                              Phase 8 (parallel after spec-20)
+                                                                              spec-21  Release profile & panic safety
+                                                                              spec-22  Diagnostic bundle
+                                                                                             │
+                                                                                             ▼
+                                                                              Phase 9 (sequential after Phase 8)
+                                                                              spec-23  Release CI pipeline
 ```
 
 **Phase 4 must run strictly in order: 10 → 11 → 12 → 13.** The specs have
@@ -41,6 +55,11 @@ these cross-spec dependencies:
 
 **Phase 5 can run concurrently** (no file overlap between spec-14, spec-16, spec-18).  
 **Phase 6:** spec-15 requires spec-18 (both modify `app.rs`); spec-17 requires spec-16 (both modify `manifest/filter.rs`).
+
+**Phase 7–9 (release readiness):**
+- **Phase 7** is sequential: spec-19 installs the `obs/` subscriber; spec-20 builds the `error::Reporter` and F2 log overlay on top of it. Depends on spec-17 (decoupled `AppState::Error` shape) and spec-18 (`LoadState::Failed`).
+- **Phase 8** is parallel: spec-21 (release profile, panic safety, size gate) and spec-22 (`--diag-bundle` CLI + auto-offer) touch disjoint files.
+- **Phase 9** is spec-23 alone — assembles the full release workflow, `cargo deny`, `cargo auditable`, SBOM, and signed checksums.
 
 ## Spec summary
 
@@ -65,6 +84,11 @@ these cross-spec dependencies:
 | [spec-16](spec-16-hot-path-alloc.md) | 5 | `Cow<'_, str>` for `NodeValue::as_str`; path-buffer in filter; depth guard on `flatten_inner` | `manifest/tree.rs`, `manifest/filter.rs` |
 | [spec-17](spec-17-data-model-cleanup.md) | 6 | Unify `apply`/`apply_ref`; `FieldDiff` struct refactor; `AppError::InvalidInput`; decouple error UI text | `manifest/filter.rs`, `compare/diff.rs`, `error.rs`, `app.rs` |
 | [spec-18](spec-18-load-state-invariants.md) | 5 | `LoadState::Failed`; `loading_count()` computed; eager `ext_to_mime` check in `RemoteSource` | `app.rs`, `manifest/loader.rs`, `ui/file_list.rs` |
+| [spec-19](spec-19-observability-core.md) | 7 | Single `obs::init`; layered subscriber (file · ring · stderr); credential redaction layer | `obs/` (new), `main.rs`, `app.rs`, `Cargo.toml` |
+| [spec-20](spec-20-error-reporter.md) | 7 | `error::Reporter` with correlation IDs; F2 log overlay; `AppState::Error` carries `CorrelationId` | `error.rs`, `app.rs`, `ui/mod.rs`, `ui/log_overlay.rs` (new) |
+| [spec-21](spec-21-release-profile.md) | 8 | Crate-local `[profile.release]`; `release-debug` sidecar; audited panic hook; size gate | `c2pa-tui/Cargo.toml`, `app.rs`, `.github/workflows/release.yml` |
+| [spec-22](spec-22-diagnostic-bundle.md) | 8 | `--diag-bundle <path>` CLI; auto-offer on `Internal` errors; redacted tar.gz writer | `diag/` (new), `main.rs`, `app.rs`, `ui/diag_bundle_prompt.rs` (new) |
+| [spec-23](spec-23-release-ci.md) | 9 | 5-target release workflow; `cargo deny`; `cargo auditable`; SBOM; signed checksums | `.github/workflows/release.yml`, `deny.toml`, `docs/RELEASE.md` |
 
 ## Quality requirements (apply to every spec)
 
